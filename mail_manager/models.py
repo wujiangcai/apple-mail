@@ -85,6 +85,8 @@ class RentalSummary:
     revoked_at: datetime | None
     last_access_at: datetime | None
     access_count: int
+    code_available: bool = False
+    code_rotated_at: datetime | None = None
 
 
 @dataclass(frozen=True)

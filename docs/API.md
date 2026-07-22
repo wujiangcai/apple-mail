@@ -87,6 +87,26 @@
 
 旧版 `durationMinutes` 创建参数不再支持，调用方必须迁移到 `expiryMode`。
 
+### `POST /api/rentals/<id>/reveal-code`
+
+按需返回当前租用码：
+
+```json
+{"accessCode":"..."}
+```
+
+仅有效租约可查看，响应设置 `Cache-Control: no-store`。旧版本创建且没有密文的租约返回 `409`，需要重置。
+
+### `POST /api/rentals/<id>/reset-code`
+
+原子生成新租用码并返回：
+
+```json
+{"accessCode":"..."}
+```
+
+旧码哈希被替换，所有关联客户会话同时删除。租约邮箱、期限和访问统计保留。响应不缓存。
+
 ### `POST /api/rentals/<id>/revoke`
 
 撤销租约并删除关联取件会话。

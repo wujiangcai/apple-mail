@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS mailbox_rentals (
     id BIGSERIAL PRIMARY KEY,
     account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
     access_code_hash CHAR(64) NOT NULL UNIQUE,
+    access_code_ciphertext TEXT,
+    code_rotated_at TIMESTAMP WITH TIME ZONE,
     starts_at TIMESTAMP WITH TIME ZONE NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE,
     ended_at TIMESTAMP WITH TIME ZONE,
@@ -87,6 +89,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS mailbox_rentals_active_account_idx
 CREATE INDEX IF NOT EXISTS mailbox_rentals_expires_at_idx
     ON mailbox_rentals (expires_at)
     WHERE expires_at IS NOT NULL AND ended_at IS NULL;
+
+ALTER TABLE mailbox_rentals
+    ADD COLUMN IF NOT EXISTS access_code_ciphertext TEXT;
+
+ALTER TABLE mailbox_rentals
+    ADD COLUMN IF NOT EXISTS code_rotated_at TIMESTAMP WITH TIME ZONE;
 
 ALTER TABLE mailbox_rentals
     ALTER COLUMN expires_at DROP NOT NULL;

@@ -33,7 +33,20 @@ flask --app 'mail_manager:create_app()' init-db
 
 该操作会删除旧的 `NOT NULL` 和旧检查约束，再建立可空字段对应的新约束。
 
-## 3. API 变化
+## 3. 租用码密文迁移
+
+新版本为 `mailbox_rentals` 增加：
+
+```sql
+access_code_ciphertext TEXT
+code_rotated_at TIMESTAMP WITH TIME ZONE
+```
+
+历史租约只保存哈希，原始租用码不可逆，因此升级后无法直接查看。管理员需要在租约列表点击“重置租用码”；系统会生成新码、保存 Fernet 密文、替换哈希并撤销旧客户会话。之后可按需查看新码。
+
+`CREDENTIALS_ENCRYPTION_KEY` 同时保护邮箱凭据和租用码密文，必须独立备份且严格限制访问。
+
+## 4. API 变化
 
 旧请求：
 
@@ -60,13 +73,13 @@ flask --app 'mail_manager:create_app()' init-db
 
 所有外部调用方必须在部署前完成适配。`expiresAt` 必须包含时区。
 
-## 4. 客户会话兼容性
+## 5. 客户会话兼容性
 
 永久租约不会产生永久 Cookie。`pickup_sessions.expires_at` 仍为非空，并按 `PICKUP_SESSION_MINUTES` 自动到期。客户会话结束后可继续用原取件码登录。
 
 现有已登录客户会话不需要迁移，会按原来的会话到期时间结束。
 
-## 5. 升级步骤
+## 6. 升级步骤
 
 ```bash
 # 1. 停止服务
@@ -96,7 +109,7 @@ journalctl -u mail-manager -n 100
 
 随后验证：管理员登录、创建指定到期租约、创建永久租约、客户取件、会话重新登录和管理员撤销。
 
-## 6. 回滚
+## 7. 回滚
 
 代码回滚前应确认旧版本无法处理 `expires_at = NULL`。如果数据库中已经创建永久租约，不能直接切回旧代码。
 

@@ -6,6 +6,7 @@ import secrets
 from flask import Blueprint, Flask, current_app, jsonify, request
 
 from mail_manager import db
+from mail_manager.crypto import CredentialCipher
 from mail_manager.models import RentalSummary
 
 
@@ -22,6 +23,14 @@ class NoRentableAccount(RentalError, LookupError):
 
 
 class RentalNotFound(RentalError, LookupError):
+    pass
+
+
+class RentalCodeUnavailable(RentalError):
+    pass
+
+
+class RentalInactive(RentalError):
     pass
 
 
@@ -58,6 +67,8 @@ def _summary(row) -> RentalSummary:
         revoked_at=None if row[6] is None else _as_utc(row[6]),
         last_access_at=None if row[7] is None else _as_utc(row[7]),
         access_count=row[8],
+        code_available=bool(row[9]),
+        code_rotated_at=None if row[10] is None else _as_utc(row[10]),
     )
 
 
@@ -97,7 +108,8 @@ class PostgresRentalRepository:
             rows = connection.execute(
                 """
                 SELECT r.id, r.account_id, a.email, r.starts_at, r.expires_at,
-                       r.ended_at, r.revoked_at, r.last_access_at, r.access_count
+                       r.ended_at, r.revoked_at, r.last_access_at, r.access_count,
+                       r.access_code_ciphertext IS NOT NULL, r.code_rotated_at
                 FROM mailbox_rentals AS r
                 JOIN accounts AS a ON a.id = r.account_id
                 ORDER BY r.id DESC
@@ -105,7 +117,9 @@ class PostgresRentalRepository:
             ).fetchall()
         return [_summary(row) for row in rows]
 
-    def create_rental(self, account_id, access_code_hash, now, expires_at):
+    def create_rental(
+        self, account_id, access_code_hash, access_code_ciphertext, now, expires_at
+    ):
         with db.transaction(self._connection()) as connection:
             self._expire(connection, now)
             if account_id is None:
@@ -145,11 +159,18 @@ class PostgresRentalRepository:
             row = connection.execute(
                 """
                 INSERT INTO mailbox_rentals (
-                    account_id, access_code_hash, starts_at, expires_at
-                ) VALUES (%s, %s, %s, %s)
+                    account_id, access_code_hash, access_code_ciphertext,
+                    starts_at, expires_at
+                ) VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (account[0], access_code_hash, now, expires_at),
+                (
+                    account[0],
+                    access_code_hash,
+                    access_code_ciphertext,
+                    now,
+                    expires_at,
+                ),
             ).fetchone()
             connection.execute(
                 """
@@ -161,7 +182,8 @@ class PostgresRentalRepository:
             result = connection.execute(
                 """
                 SELECT r.id, r.account_id, a.email, r.starts_at, r.expires_at,
-                       r.ended_at, r.revoked_at, r.last_access_at, r.access_count
+                       r.ended_at, r.revoked_at, r.last_access_at, r.access_count,
+                       r.access_code_ciphertext IS NOT NULL, r.code_rotated_at
                 FROM mailbox_rentals AS r
                 JOIN accounts AS a ON a.id = r.account_id
                 WHERE r.id = %s
@@ -169,6 +191,57 @@ class PostgresRentalRepository:
                 (row[0],),
             ).fetchone()
         return _summary(result)
+
+    def get_code_ciphertext(self, rental_id, now):
+        with db.transaction(self._connection()) as connection:
+            self._expire(connection, now)
+            row = connection.execute(
+                """
+                SELECT access_code_ciphertext
+                FROM mailbox_rentals
+                WHERE id = %s AND ended_at IS NULL
+                """,
+                (rental_id,),
+            ).fetchone()
+            if row is None:
+                raise RentalInactive
+            connection.execute(
+                """
+                INSERT INTO rental_events (rental_id, event_type, created_at)
+                VALUES (%s, 'code_revealed', %s)
+                """,
+                (rental_id, now),
+            )
+        if row[0] is None:
+            raise RentalCodeUnavailable
+        return row[0]
+
+    def reset_code(self, rental_id, code_hash, ciphertext, now):
+        with db.transaction(self._connection()) as connection:
+            self._expire(connection, now)
+            row = connection.execute(
+                """
+                UPDATE mailbox_rentals
+                SET access_code_hash = %s,
+                    access_code_ciphertext = %s,
+                    code_rotated_at = %s
+                WHERE id = %s AND ended_at IS NULL
+                RETURNING id
+                """,
+                (code_hash, ciphertext, now, rental_id),
+            ).fetchone()
+            if row is None:
+                raise RentalInactive
+            connection.execute(
+                "DELETE FROM pickup_sessions WHERE rental_id = %s", (rental_id,)
+            )
+            connection.execute(
+                """
+                INSERT INTO rental_events (rental_id, event_type, created_at)
+                VALUES (%s, 'code_reset', %s)
+                """,
+                (rental_id, now),
+            )
 
     def revoke(self, rental_id, now):
         with db.transaction(self._connection()) as connection:
@@ -197,8 +270,15 @@ class PostgresRentalRepository:
 
 
 class RentalService:
-    def __init__(self, repository, clock=lambda: datetime.now(UTC), code_factory=None):
+    def __init__(
+        self,
+        repository,
+        cipher,
+        clock=lambda: datetime.now(UTC),
+        code_factory=None,
+    ):
         self._repository = repository
+        self._cipher = cipher
         self._clock = clock
         self._code_factory = code_factory or (lambda: secrets.token_urlsafe(18))
 
@@ -232,9 +312,29 @@ class RentalService:
             raise InvalidRentalPayload
         code = self._code_factory()
         rental = self._repository.create_rental(
-            account_id, hash_access_code(code), now, expires_at
+            account_id,
+            hash_access_code(code),
+            self._cipher.encrypt(code),
+            now,
+            expires_at,
         )
         return rental, code
+
+    def reveal_code(self, rental_id):
+        ciphertext = self._repository.get_code_ciphertext(
+            rental_id, _as_utc(self._clock())
+        )
+        return self._cipher.decrypt(ciphertext)
+
+    def reset_code(self, rental_id):
+        code = self._code_factory()
+        self._repository.reset_code(
+            rental_id,
+            hash_access_code(code),
+            self._cipher.encrypt(code),
+            _as_utc(self._clock()),
+        )
+        return code
 
     def revoke(self, rental_id):
         if not self._repository.revoke(rental_id, _as_utc(self._clock())):
@@ -272,6 +372,8 @@ def _serialize(rental, now=None):
         "revokedAt": stamp(rental.revoked_at),
         "lastAccessAt": stamp(rental.last_access_at),
         "accessCount": rental.access_count,
+        "codeAvailable": rental.code_available,
+        "codeRotatedAt": stamp(rental.code_rotated_at),
         "status": status,
     }
 
@@ -299,6 +401,30 @@ def create_rental():
     return jsonify(result), 201
 
 
+@blueprint.post("/api/rentals/<int:rental_id>/reveal-code")
+def reveal_rental_code(rental_id):
+    try:
+        code = _service().reveal_code(rental_id)
+    except RentalCodeUnavailable:
+        return jsonify(error="code unavailable; reset required"), 409
+    except RentalInactive:
+        return jsonify(error="rental inactive"), 409
+    response = jsonify(accessCode=code)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@blueprint.post("/api/rentals/<int:rental_id>/reset-code")
+def reset_rental_code(rental_id):
+    try:
+        code = _service().reset_code(rental_id)
+    except RentalInactive:
+        return jsonify(error="rental inactive"), 409
+    response = jsonify(accessCode=code)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @blueprint.post("/api/rentals/<int:rental_id>/revoke")
 def revoke_rental(rental_id):
     try:
@@ -311,6 +437,9 @@ def revoke_rental(rental_id):
 def init_app(app: Flask):
     repository = app.config.get("RENTAL_REPOSITORY") or PostgresRentalRepository()
     clock = app.config.get("RENTAL_CLOCK", lambda: datetime.now(UTC))
-    app.extensions["rental_service"] = RentalService(repository, clock)
+    cipher = app.config.get("CREDENTIAL_CIPHER")
+    if cipher is None:
+        cipher = CredentialCipher(app.config["CREDENTIALS_ENCRYPTION_KEY"])
+    app.extensions["rental_service"] = RentalService(repository, cipher, clock)
     app.config.setdefault("RENTAL_CLOCK", clock)
     app.register_blueprint(blueprint)

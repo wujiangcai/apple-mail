@@ -354,9 +354,26 @@ export function bootstrap(doc = document, api = new ApiClient()) {
       }
       const actions = doc.createElement("td");
       if (rental.status === "active") {
+        if (rental.codeAvailable) {
+          const reveal = doc.createElement("button");
+          reveal.type = "button";
+          reveal.className = "table-action";
+          reveal.dataset.rentalAction = "reveal-code";
+          reveal.dataset.rentalId = String(rental.id);
+          reveal.textContent = "查看租用码";
+          actions.append(reveal);
+        }
+        const reset = doc.createElement("button");
+        reset.type = "button";
+        reset.className = "table-action";
+        reset.dataset.rentalAction = "reset-code";
+        reset.dataset.rentalId = String(rental.id);
+        reset.textContent = "重置租用码";
+        actions.append(reset);
         const button = doc.createElement("button");
         button.type = "button";
         button.className = "table-action";
+        button.dataset.rentalAction = "revoke";
         button.dataset.rentalId = String(rental.id);
         button.textContent = "撤销";
         actions.append(button);
@@ -648,8 +665,34 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   rentalRows.addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-rental-id]");
     if (!button) return;
+    const rentalId = button.dataset.rentalId;
+    const action = button.dataset.rentalAction;
     try {
-      await run(() => api.post(`/api/rentals/${button.dataset.rentalId}/revoke`, {}), "租约已撤销");
+      if (action === "reveal-code") {
+        const result = await run(
+          () => api.post(`/api/rentals/${rentalId}/reveal-code`, {}),
+          "租用码将在 60 秒后清除",
+        );
+        activePickupCode = result.accessCode;
+        pickupCodeValue.textContent = activePickupCode;
+        showDialog(pickupCodeDialog);
+        return;
+      }
+      if (action === "reset-code") {
+        if (!globalThis.confirm("重置后旧租用码和已登录客户会话将立即失效。确定继续吗？")) {
+          return;
+        }
+        const result = await run(
+          () => api.post(`/api/rentals/${rentalId}/reset-code`, {}),
+          "租用码已重置",
+        );
+        activePickupCode = result.accessCode;
+        pickupCodeValue.textContent = activePickupCode;
+        showDialog(pickupCodeDialog);
+        await refreshRentals();
+        return;
+      }
+      await run(() => api.post(`/api/rentals/${rentalId}/revoke`, {}), "租约已撤销");
       await Promise.all([refreshRentals(), refreshAccounts()]);
     } catch {
       // The status region already contains the actionable API error.
