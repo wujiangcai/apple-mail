@@ -15,6 +15,7 @@ beforeEach(() => {
         <button data-pickup-folder="inbox"></button>
         <button data-pickup-folder="junkemail"></button>
         <input id="pickup-keyword">
+        <button id="pickup-refresh"></button>
         <button id="pickup-verify"></button>
         <div id="pickup-mail-list"></div><div id="pickup-mail-detail"></div>
       </section>

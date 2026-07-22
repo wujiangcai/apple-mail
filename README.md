@@ -104,6 +104,7 @@ flask --app 'mail_manager:create_app()' run --host 127.0.0.1 --port 5000
 - [API 文档](docs/API.md)
 - [部署指南](docs/DEPLOYMENT.md)
 - [升级指南](docs/UPGRADE.md)
+- [号商管理员与购买用户角色审计](docs/ROLE_AUDIT.md)
 
 ## 测试
 

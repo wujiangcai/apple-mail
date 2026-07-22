@@ -10,6 +10,7 @@ Group=mail-manager
 WorkingDirectory=/opt/mail-manager
 EnvironmentFile=/etc/mail-manager/mail-manager.env
 Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/mail-manager/.venv/bin/flask --app "mail_manager:create_app()" cleanup-expired
 ExecStart=/opt/mail-manager/.venv/bin/flask --app "mail_manager:create_app()" refresh-tokens
 TimeoutStartSec=3700
 UMask=0077

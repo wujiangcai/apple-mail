@@ -109,13 +109,7 @@ def test_systemd_unit_is_non_root_loopback_only_and_hardened():
     assert service["User"] == "mail-manager"
     assert service["Group"] == "mail-manager"
     assert service["EnvironmentFile"] == "/etc/mail-manager/mail-manager.env"
-    init_command = shlex.split(service["ExecStartPre"])
-    assert init_command == [
-        "/opt/mail-manager/.venv/bin/flask",
-        "--app",
-        "mail_manager:create_app()",
-        "init-db",
-    ]
+    assert "ExecStartPre" not in service
     start_command = shlex.split(service["ExecStart"])
     bind_index = start_command.index("--bind")
     assert start_command[bind_index + 1] == "127.0.0.1:5000"

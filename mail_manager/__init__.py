@@ -11,6 +11,7 @@ from mail_manager import accounts
 from mail_manager import mail
 from mail_manager import rentals
 from mail_manager import pickup
+from mail_manager import operations
 
 
 __all__ = ["Settings", "create_app"]
@@ -101,6 +102,7 @@ def create_app(
     mail.init_app(app)
     rentals.init_app(app)
     pickup.init_app(app)
+    operations.init_app(app)
 
     @app.get("/")
     def index():

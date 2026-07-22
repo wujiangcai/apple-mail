@@ -78,9 +78,9 @@ TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 2. 将代码放入 `/opt/mail-manager`；
 3. 使用锁定依赖创建虚拟环境；
 4. 将 `deploy/mail-manager.env.example` 安装到 `/etc/mail-manager/mail-manager.env`，权限 `0600`，所有者 `root:root`；
-5. 安装 `deploy/mail-manager.service`；
-6. 配置 `deploy/Caddyfile` 并申请 HTTPS；
-7. 执行数据库备份和 `init-db`；
+5. 在维护窗口手动执行 `flask --app 'mail_manager:create_app()' init-db`；
+6. 安装 `deploy/mail-manager.service`；
+7. 配置 `deploy/Caddyfile` 并申请 HTTPS；
 8. 启动 systemd 服务并检查日志。
 
 不要让 Gunicorn 监听公网地址；只监听 `127.0.0.1:5000`，由 Caddy 对外提供 HTTPS、安全响应头和请求体限制。
@@ -141,7 +141,7 @@ journalctl -u mail-manager-refresh.service
 systemctl start mail-manager-refresh.service
 ```
 
-任务每天运行一次，带随机延迟并支持关机错过后补跑。PostgreSQL advisory lock 防止多个任务并发。不要把调度器放进 Gunicorn worker。
+任务每天运行一次，带随机延迟并支持关机错过后补跑。运行前会执行 `cleanup-expired` 清理过期会话、陈旧失败记录和过期 refresh lease。PostgreSQL advisory lock 防止多个任务并发。不要把调度器放进 Gunicorn worker。
 
 相关配置：
 

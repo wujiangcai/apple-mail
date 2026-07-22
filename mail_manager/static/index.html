@@ -110,6 +110,12 @@
         </nav>
       </section>
 
+      <section class="stats-grid" aria-label="授权维护状态">
+        <article class="stat-card"><span>最近维护</span><strong id="maintenance-status">尚未运行</strong></article>
+        <article class="stat-card"><span>刷新成功</span><strong id="maintenance-success">0</strong></article>
+        <article class="stat-card"><span>异常邮箱</span><strong id="maintenance-issues">0</strong></article>
+      </section>
+
       <section class="account-panel" aria-labelledby="rentals-title">
         <div class="panel-heading">
           <div><p class="eyebrow">PICKUP RENTALS</p><h2 id="rentals-title">限时取件租约</h2></div>
@@ -164,7 +170,7 @@
       <div><p class="eyebrow">ONE-TIME SECRET</p><h2>客户取件码</h2></div>
       <button class="icon-button" type="button" data-close-dialog="#pickup-code-dialog" aria-label="关闭">×</button>
     </div>
-    <p class="hint">请立即交给客户。关闭或刷新后无法再次查看。</p>
+    <p class="hint">租用码创建后可在有效租约中按需查看或重置，明文只在当前页面短时显示。</p>
     <p id="pickup-code-value" class="pickup-code"></p>
     <div class="dialog-actions"><button id="copy-pickup-code" class="button button-primary" type="button">复制取件码</button></div>
   </dialog>

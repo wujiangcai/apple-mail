@@ -276,20 +276,30 @@ class PostgresMailRepository:
             raise RefreshPersistenceError("refresh lease release failed") from None
         return row is not None
 
-    def maintenance_account_ids(self, limit: int) -> list[int]:
+    def maintenance_account_ids(self, after_id: int, limit: int) -> list[int]:
+        if type(after_id) is not int or after_id < 0:
+            raise ValueError("after_id must be a non-negative integer")
         if type(limit) is not int or not 1 <= limit <= 10000:
             raise ValueError("limit must be from 1 to 10000")
         with self._transaction() as connection:
             rows = connection.execute(
                 """
                 SELECT id FROM accounts
-                WHERE token_valid = TRUE
-                ORDER BY last_refresh_time NULLS FIRST, id
+                WHERE token_valid = TRUE AND id > %s
+                ORDER BY id
                 LIMIT %s
                 """,
-                (limit,),
+                (after_id, limit),
             ).fetchall()
         return [row[0] for row in rows]
+
+    def remaining_maintenance_count(self, after_id: int) -> int:
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM accounts WHERE token_valid = TRUE AND id > %s",
+                (after_id,),
+            ).fetchone()
+        return row[0]
 
     def begin_maintenance_run(self, now):
         connection = db.connect_database(current_app.config["DATABASE_URL"])
@@ -318,7 +328,8 @@ class PostgresMailRepository:
                 UPDATE token_maintenance_runs
                 SET finished_at = %s, status = %s, scanned_count = %s,
                     success_count = %s, invalid_count = %s,
-                    busy_count = %s, failed_count = %s
+                    busy_count = %s, rate_limited_count = %s,
+                    failed_count = %s, remaining_count = %s
                 WHERE id = %s
                 """,
                 (
@@ -328,13 +339,27 @@ class PostgresMailRepository:
                     counts["success"],
                     counts["invalid"],
                     counts["busy"],
+                    counts["rate_limited"],
                     counts["failed"],
+                    counts["remaining"],
                     run_id,
                 ),
             )
             connection.commit()
         finally:
             connection.close()
+
+    def latest_maintenance_run(self):
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT started_at, finished_at, status, scanned_count,
+                       success_count, invalid_count, busy_count,
+                       rate_limited_count, failed_count, remaining_count
+                FROM token_maintenance_runs ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        return row
 
     def set_bound(self, account_id: int, bound: bool, now: datetime) -> bool:
         _validate_account_id(account_id)
@@ -445,41 +470,89 @@ class TokenCoordinator:
 
 
 class TokenMaintenanceService:
-    def __init__(self, repository, coordinator, clock=lambda: datetime.now(UTC)):
+    def __init__(
+        self,
+        repository,
+        coordinator,
+        clock=lambda: datetime.now(UTC),
+        *,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+    ):
         self._repository = repository
         self._coordinator = coordinator
         self._clock = clock
+        self._monotonic = monotonic
+        self._sleep = sleep
 
-    def run(self, limit, max_runtime_seconds):
+    def run(self, batch_size, max_runtime_seconds, workers=2):
         started = _as_utc(self._clock())
         handle = self._repository.begin_maintenance_run(started)
         if handle is None:
             return None
-        counts = {"scanned": 0, "success": 0, "invalid": 0, "busy": 0, "failed": 0}
-        deadline = time.monotonic() + max_runtime_seconds
+        counts = {
+            "scanned": 0,
+            "success": 0,
+            "invalid": 0,
+            "busy": 0,
+            "rate_limited": 0,
+            "failed": 0,
+            "remaining": 0,
+        }
+        deadline = self._monotonic() + max_runtime_seconds
+        after_id = 0
+        status = "completed"
+
+        def refresh(account_id):
+            try:
+                self._coordinator.access_token(account_id)
+                return "success", None
+            except (InvalidGrant, TokenInvalid):
+                return "invalid", None
+            except RefreshBusy:
+                return "busy", None
+            except UpstreamRateLimited as error:
+                return "rate_limited", error.retry_after
+            except (UpstreamUnavailable, UpstreamProtocolError):
+                return "failed", None
+
         try:
-            for account_id in self._repository.maintenance_account_ids(limit):
-                if time.monotonic() >= deadline:
-                    counts["failed"] += 1
+            while self._monotonic() < deadline:
+                account_ids = self._repository.maintenance_account_ids(
+                    after_id, batch_size
+                )
+                if not account_ids:
                     break
-                counts["scanned"] += 1
-                try:
-                    self._coordinator.access_token(account_id)
-                    counts["success"] += 1
-                except (InvalidGrant, TokenInvalid):
-                    counts["invalid"] += 1
-                except RefreshBusy:
-                    counts["busy"] += 1
-                except (UpstreamRateLimited, UpstreamUnavailable, UpstreamProtocolError):
-                    counts["failed"] += 1
+                with ThreadPoolExecutor(
+                    max_workers=min(workers, len(account_ids))
+                ) as executor:
+                    results = list(executor.map(refresh, account_ids))
+                for account_id, (outcome, retry_after) in zip(
+                    account_ids, results, strict=True
+                ):
+                    after_id = account_id
+                    counts["scanned"] += 1
+                    counts[outcome] += 1
+                    if outcome == "rate_limited" and retry_after:
+                        remaining = deadline - self._monotonic()
+                        if retry_after <= remaining:
+                            self._sleep(retry_after)
+                if len(account_ids) < batch_size:
+                    break
+            counts["remaining"] = self._repository.remaining_maintenance_count(
+                after_id
+            )
+            if counts["remaining"]:
+                status = "partial"
         except BaseException:
             self._repository.finish_maintenance_run(
                 handle, _as_utc(self._clock()), counts, "failed"
             )
             raise
         self._repository.finish_maintenance_run(
-            handle, _as_utc(self._clock()), counts
+            handle, _as_utc(self._clock()), counts, status
         )
+        counts["status"] = status
         return counts
 
 
@@ -512,7 +585,11 @@ class MailService:
         return [_serialize_message(_normalize_message(item)) for item in raw_messages]
 
     def verify_code(
-        self, account_id: int, keyword: str | None, max_results: int
+        self,
+        account_id: int,
+        keyword: str | None,
+        max_results: int,
+        folder: str = "inbox",
     ) -> str:
         _validate_account_id(account_id)
         if keyword is not None and (
@@ -520,7 +597,7 @@ class MailService:
         ):
             raise InvalidMailPayload
         _validate_result_limit(max_results)
-        messages = self.list_mail(account_id, "inbox", max_results)
+        messages = self.list_mail(account_id, folder, max_results)
         keyword_folded = keyword.casefold() if keyword else None
         for message in messages:
             searchable = "\n".join(
@@ -816,12 +893,15 @@ def pickup_verify_code():
     if (
         not isinstance(payload, dict)
         or "maxResults" not in payload
-        or not set(payload) <= {"keyword", "maxResults"}
+        or not set(payload) <= {"keyword", "maxResults", "folder"}
     ):
         return _invalid_response()
     try:
         code = _service().verify_code(
-            context.account_id, payload.get("keyword"), payload["maxResults"]
+            context.account_id,
+            payload.get("keyword"),
+            payload["maxResults"],
+            payload.get("folder", "inbox"),
         )
     except InvalidMailPayload:
         return _invalid_response()
@@ -859,12 +939,38 @@ def random_unbound():
     return jsonify(account)
 
 
+@blueprint.get("/api/token-maintenance/latest")
+def latest_token_maintenance():
+    row = current_app.extensions["mail_repository"].latest_maintenance_run()
+    if row is None:
+        return jsonify(run=None)
+
+    def stamp(value):
+        return None if value is None else _as_utc(value).isoformat().replace("+00:00", "Z")
+
+    return jsonify(
+        run={
+            "startedAt": stamp(row[0]),
+            "finishedAt": stamp(row[1]),
+            "status": row[2],
+            "scanned": row[3],
+            "success": row[4],
+            "invalid": row[5],
+            "busy": row[6],
+            "rateLimited": row[7],
+            "failed": row[8],
+            "remaining": row[9],
+        }
+    )
+
+
 @click.command("refresh-tokens")
 def refresh_tokens_command():
     service = current_app.extensions["token_maintenance_service"]
     counts = service.run(
         current_app.config["TOKEN_REFRESH_BATCH_SIZE"],
         current_app.config["TOKEN_REFRESH_MAX_RUNTIME_SECONDS"],
+        current_app.config["TOKEN_REFRESH_WORKERS"],
     )
     if counts is None:
         click.echo("Token maintenance is already running.")
@@ -873,7 +979,8 @@ def refresh_tokens_command():
         "Token maintenance completed: "
         f"scanned={counts['scanned']} success={counts['success']} "
         f"invalid={counts['invalid']} busy={counts['busy']} "
-        f"failed={counts['failed']}"
+        f"rate_limited={counts['rate_limited']} failed={counts['failed']} "
+        f"remaining={counts['remaining']} status={counts['status']}"
     )
 
 
@@ -887,6 +994,7 @@ def init_app(app: Flask) -> None:
         cipher = CredentialCipher(app.config["CREDENTIALS_ENCRYPTION_KEY"])
     clock = app.config.get("MAIL_CLOCK", lambda: datetime.now(UTC))
     coordinator = TokenCoordinator(repository, graph_client_factory, cipher, clock)
+    app.extensions["mail_repository"] = repository
     app.extensions["mail_service"] = MailService(
         repository, coordinator, graph_client_factory, clock
     )

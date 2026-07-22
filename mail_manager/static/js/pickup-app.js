@@ -23,6 +23,21 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   let permanent = false;
   let countdown = null;
 
+  function friendlyError(error) {
+    const message = String(error?.message || "");
+    const translations = new Map([
+      ["invalid or expired pickup code", "取件码无效、已过期或已被撤销"],
+      ["pickup authorization required", "取件授权已失效，请重新输入取件码"],
+      ["account token invalid", "邮箱授权已失效，请联系管理员重新授权"],
+      ["upstream rate limited", "Microsoft 服务请求过多，请稍后再试"],
+      ["upstream unavailable", "Microsoft 邮箱服务暂时不可用，请稍后再试"],
+      ["not found", "没有找到验证码或邮件"],
+      ["request timed out", "请求超时，请稍后重试"],
+      ["network request failed", "网络连接失败，请检查网络后重试"],
+    ]);
+    return translations.get(message) || "操作失败，请稍后重试或联系管理员";
+  }
+
   function clearMailbox() {
     messages = [];
     list.replaceChildren();
@@ -53,14 +68,18 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
         setStatus(status, "租约已到期", "error");
         return;
       }
-      const sessionMinutes = Math.ceil(remaining / 60000);
+      const sessionSeconds = Math.ceil(remaining / 1000);
+      const sessionText = sessionSeconds < 300
+        ? `${sessionSeconds} 秒`
+        : `${Math.ceil(sessionSeconds / 60)} 分钟`;
       const rentalText = permanent
         ? "租约永不过期"
         : `租约到期：${rentalExpiresAt.toLocaleString()}`;
-      expiry.textContent = `${rentalText}；当前会话剩余 ${sessionMinutes} 分钟`;
+      expiry.textContent = `${rentalText}；当前会话剩余 ${sessionText}`;
+      expiry.dataset.urgent = sessionSeconds < 300 ? "true" : "false";
     };
     update();
-    countdown = setInterval(update, 30000);
+    countdown = setInterval(update, 1000);
   }
 
   function acceptAuth(auth) {
@@ -92,7 +111,7 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
       await loadMail();
       setStatus(status, "邮箱已载入", "success");
     } catch (error) {
-      setStatus(status, error.message, "error");
+      setStatus(status, friendlyError(error), "error");
     }
   });
 
@@ -103,7 +122,7 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
         await loadMail();
         setStatus(status, "邮件已载入", "success");
       } catch (error) {
-        setStatus(status, error.message, "error");
+        setStatus(status, friendlyError(error), "error");
       }
     });
   });
@@ -121,15 +140,26 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
     });
   });
 
+  doc.querySelector("#pickup-refresh").addEventListener("click", async () => {
+    try {
+      await loadMail();
+      setStatus(status, `邮件已刷新：${new Date().toLocaleTimeString()}`, "success");
+    } catch (error) {
+      setStatus(status, friendlyError(error), "error");
+    }
+  });
+
   doc.querySelector("#pickup-verify").addEventListener("click", async () => {
     const value = keyword.value.trim();
-    const body = value ? { keyword: value, maxResults: 100 } : { maxResults: 100 };
+    const body = value
+      ? { keyword: value, maxResults: 100, folder }
+      : { maxResults: 100, folder };
     try {
       const result = await api.post("/api/pickup/verify-code", body);
       setStatus(status, `验证码：${result.code}`, "success");
       await navigator.clipboard?.writeText(result.code);
     } catch (error) {
-      setStatus(status, error.message, "error");
+      setStatus(status, friendlyError(error), "error");
     }
   });
 
@@ -159,7 +189,7 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
       await loadMail();
     } catch (error) {
       showAuthenticated(false);
-      setStatus(status, error.message, "error");
+      setStatus(status, friendlyError(error), "error");
     }
   })();
 

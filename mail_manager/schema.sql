@@ -47,11 +47,20 @@ CREATE TABLE IF NOT EXISTS token_maintenance_runs (
     success_count INTEGER NOT NULL DEFAULT 0,
     invalid_count INTEGER NOT NULL DEFAULT 0,
     busy_count INTEGER NOT NULL DEFAULT 0,
+    rate_limited_count INTEGER NOT NULL DEFAULT 0,
     failed_count INTEGER NOT NULL DEFAULT 0,
-    CHECK (status IN ('running', 'completed', 'failed')),
+    remaining_count INTEGER NOT NULL DEFAULT 0,
+    CHECK (status IN ('running', 'completed', 'partial', 'failed')),
     CHECK (scanned_count >= 0 AND success_count >= 0),
-    CHECK (invalid_count >= 0 AND busy_count >= 0 AND failed_count >= 0)
+    CHECK (invalid_count >= 0 AND busy_count >= 0),
+    CHECK (rate_limited_count >= 0 AND failed_count >= 0),
+    CHECK (remaining_count >= 0)
 );
+
+ALTER TABLE token_maintenance_runs
+    ADD COLUMN IF NOT EXISTS rate_limited_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE token_maintenance_runs
+    ADD COLUMN IF NOT EXISTS remaining_count INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS token_maintenance_runs_started_at_idx
     ON token_maintenance_runs (started_at DESC);

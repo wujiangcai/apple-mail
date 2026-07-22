@@ -216,6 +216,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   let loginPending = false;
   let rentals = [];
   let activePickupCode = "";
+  let adminSettings = { rentalDefaultMinutes: 60, rentalMinMinutes: 5, rentalMaxMinutes: 10080 };
 
   const loginView = doc.querySelector("#login-view");
   const dashboard = doc.querySelector("#dashboard");
@@ -257,6 +258,9 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   const rentalLookupForm = doc.querySelector("#rental-lookup-form");
   const rentalLookupCode = doc.querySelector("#rental-lookup-code");
   const rentalLookupResult = doc.querySelector("#rental-lookup-result");
+  const maintenanceStatus = doc.querySelector("#maintenance-status");
+  const maintenanceSuccess = doc.querySelector("#maintenance-success");
+  const maintenanceIssues = doc.querySelector("#maintenance-issues");
 
   function eraseReveal() {
     if (revealTimer !== null) {
@@ -361,6 +365,22 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     rentalAccountHint.textContent = available.length
       ? `可指定 ${available.length} 个邮箱；也可由系统自动分配。`
       : "暂无可指定邮箱，自动分配也可能失败。";
+  }
+
+  async function refreshAdminMetadata() {
+    const [settings, maintenance] = await Promise.all([
+      api.get("/api/admin/settings"),
+      api.get("/api/token-maintenance/latest"),
+    ]);
+    adminSettings = settings;
+    const run = maintenance.run;
+    maintenanceStatus.textContent = run
+      ? `${run.status} · ${new Date(run.startedAt).toLocaleString()}`
+      : "尚未运行";
+    maintenanceSuccess.textContent = String(run?.success || 0);
+    maintenanceIssues.textContent = String(
+      (run?.invalid || 0) + (run?.busy || 0) + (run?.rateLimited || 0) + (run?.failed || 0),
+    );
   }
 
   async function refreshAccounts() {
@@ -504,7 +524,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
       loginPassword.value = "";
       showAuthenticated(true);
       await run(async () => {
-        await Promise.all([refreshAccounts(), refreshRentals()]);
+        await Promise.all([refreshAccounts(), refreshRentals(), refreshAdminMetadata()]);
       }, "数据已载入");
     } catch (error) {
       if (loginVersion === authOperationVersion) {
@@ -677,7 +697,9 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   });
 
   function setDefaultRentalExpiry() {
-    const defaultDate = new Date(Date.now() + 60 * 60 * 1000);
+    const defaultDate = new Date(
+      Date.now() + adminSettings.rentalDefaultMinutes * 60 * 1000,
+    );
     const local = new Date(defaultDate.getTime() - defaultDate.getTimezoneOffset() * 60000);
     rentalExpiry.value = local.toISOString().slice(0, 16);
   }
