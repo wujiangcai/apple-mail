@@ -192,6 +192,31 @@ class PostgresRentalRepository:
             ).fetchone()
         return _summary(result)
 
+    def lookup_by_code_hash(self, code_hash, now):
+        with db.transaction(self._connection()) as connection:
+            self._expire(connection, now)
+            row = connection.execute(
+                """
+                SELECT r.id, r.account_id, a.email, r.starts_at, r.expires_at,
+                       r.ended_at, r.revoked_at, r.last_access_at, r.access_count,
+                       r.access_code_ciphertext IS NOT NULL, r.code_rotated_at
+                FROM mailbox_rentals AS r
+                JOIN accounts AS a ON a.id = r.account_id
+                WHERE r.access_code_hash = %s
+                """,
+                (code_hash,),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                """
+                INSERT INTO rental_events (rental_id, event_type, created_at)
+                VALUES (%s, 'code_lookup', %s)
+                """,
+                (row[0], now),
+            )
+        return _summary(row)
+
     def get_code_ciphertext(self, rental_id, now):
         with db.transaction(self._connection()) as connection:
             self._expire(connection, now)
@@ -320,6 +345,22 @@ class RentalService:
         )
         return rental, code
 
+    def lookup_by_code(self, payload):
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"accessCode"}
+            or not isinstance(payload["accessCode"], str)
+            or not payload["accessCode"].strip()
+            or len(payload["accessCode"]) > 256
+        ):
+            raise InvalidRentalPayload
+        rental = self._repository.lookup_by_code_hash(
+            hash_access_code(payload["accessCode"]), _as_utc(self._clock())
+        )
+        if rental is None:
+            raise RentalNotFound
+        return rental
+
     def reveal_code(self, rental_id):
         ciphertext = self._repository.get_code_ciphertext(
             rental_id, _as_utc(self._clock())
@@ -399,6 +440,19 @@ def create_rental():
     result = _serialize(rental, current_app.config["RENTAL_CLOCK"]())
     result["accessCode"] = code
     return jsonify(result), 201
+
+
+@blueprint.post("/api/rentals/lookup")
+def lookup_rental():
+    try:
+        rental = _service().lookup_by_code(request.get_json(silent=True))
+    except InvalidRentalPayload:
+        return jsonify(error="invalid request"), 400
+    except RentalNotFound:
+        return jsonify(error="not found"), 404
+    response = jsonify(_serialize(rental, current_app.config["RENTAL_CLOCK"]()))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @blueprint.post("/api/rentals/<int:rental_id>/reveal-code")

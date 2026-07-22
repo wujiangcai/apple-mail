@@ -262,6 +262,10 @@ code { color: var(--apple-dark); font: .8rem ui-monospace, monospace; }
 .expiry-options { display: flex; margin: 12px 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; gap: 18px; }
 .expiry-options legend { padding: 0 6px; color: var(--ink-muted); font-size: .8rem; }
 .expiry-options label { display: flex; align-items: center; gap: 6px; }
+.rental-lookup-form { display: grid; padding: 0 24px 18px; align-items: end; grid-template-columns: minmax(240px, 1fr) auto; gap: 8px; }
+.rental-lookup-form label { grid-column: 1 / -1; }
+.lookup-result { display: flex; margin: 0 24px 18px; padding: 14px; align-items: center; border: 1px solid var(--line); background: #f8f4ea; gap: 14px; }
+.lookup-result span { color: var(--ink-muted); flex: 1; }
 
 [hidden] { display: none !important; }
 

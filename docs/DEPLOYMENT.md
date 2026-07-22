@@ -114,7 +114,44 @@ TEST_DATABASE_URL=postgresql://mail_manager_test:随机密码@127.0.0.1:5432/mai
 
 禁止指向生产数据库。
 
-## 7. 日志和监控
+## 7. 每日 Microsoft Graph 授权维护
+
+Access token 是短期令牌，系统按邮件请求即时获取且不持久化。每日任务维护的是所有 `token_valid` 邮箱的 refresh token：调用 Microsoft OAuth 验证并轮换 refresh token，更新 `last_refresh_time`，发现 `invalid_grant` 时将邮箱标记为无效。
+
+安装定时服务：
+
+```bash
+install -o root -g root -m 644 deploy/mail-manager-refresh.service /etc/systemd/system/
+install -o root -g root -m 644 deploy/mail-manager-refresh.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now mail-manager-refresh.timer
+```
+
+查看计划和最近结果：
+
+```bash
+systemctl list-timers mail-manager-refresh.timer
+systemctl status mail-manager-refresh.service
+journalctl -u mail-manager-refresh.service
+```
+
+手动执行：
+
+```bash
+systemctl start mail-manager-refresh.service
+```
+
+任务每天运行一次，带随机延迟并支持关机错过后补跑。PostgreSQL advisory lock 防止多个任务并发。不要把调度器放进 Gunicorn worker。
+
+相关配置：
+
+```env
+TOKEN_REFRESH_WORKERS=2
+TOKEN_REFRESH_BATCH_SIZE=100
+TOKEN_REFRESH_MAX_RUNTIME_SECONDS=3600
+```
+
+## 8. 日志和监控
 
 重点监控：
 

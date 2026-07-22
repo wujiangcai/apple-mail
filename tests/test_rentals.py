@@ -21,6 +21,8 @@ class FakeRentalRepository:
         self.items = []
         self.ciphertext = None
         self.reset_calls = []
+        self.lookup_result = None
+        self.lookup_calls = []
 
     def list_rentals(self, now):
         self.listed_at = now
@@ -43,6 +45,10 @@ class FakeRentalRepository:
             last_access_at=None,
             access_count=0,
         )
+
+    def lookup_by_code_hash(self, code_hash, now):
+        self.lookup_calls.append((code_hash, now))
+        return self.lookup_result
 
     def get_code_ciphertext(self, rental_id, now):
         from mail_manager.rentals import RentalCodeUnavailable
@@ -125,6 +131,40 @@ def test_create_never_expiring_rental_stores_null_expiry():
     assert serialized["expiryMode"] == "never"
     assert serialized["expiresAt"] is None
     assert serialized["status"] == "active"
+
+
+def test_lookup_hashes_full_code_and_returns_rental_metadata():
+    from mail_manager.models import RentalSummary
+
+    repository = FakeRentalRepository()
+    repository.lookup_result = RentalSummary(
+        id=4,
+        account_id=8,
+        email="sold@example.test",
+        starts_at=NOW,
+        expires_at=None,
+        ended_at=None,
+        revoked_at=None,
+        last_access_at=None,
+        access_count=2,
+    )
+    service = RentalService(repository, _cipher(), lambda: NOW)
+
+    rental = service.lookup_by_code({"accessCode": "sold-code"})
+
+    assert rental.email == "sold@example.test"
+    assert repository.lookup_calls == [(hash_access_code("sold-code"), NOW)]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, {}, {"accessCode": ""}, {"accessCode": 1}, {"accessCode": "x" * 257}],
+)
+def test_lookup_validates_complete_code(payload):
+    service = RentalService(FakeRentalRepository(), _cipher(), lambda: NOW)
+
+    with pytest.raises(InvalidRentalPayload):
+        service.lookup_by_code(payload)
 
 
 def test_reveal_and_reset_use_encrypted_code_and_replace_hash():

@@ -77,6 +77,11 @@ def create_app(
         RENTAL_MAX_MINUTES=runtime_settings.rental_max_minutes,
         RENTAL_DEFAULT_MINUTES=runtime_settings.rental_default_minutes,
         PICKUP_SESSION_MINUTES=runtime_settings.pickup_session_minutes,
+        TOKEN_REFRESH_WORKERS=runtime_settings.token_refresh_workers,
+        TOKEN_REFRESH_BATCH_SIZE=runtime_settings.token_refresh_batch_size,
+        TOKEN_REFRESH_MAX_RUNTIME_SECONDS=(
+            runtime_settings.token_refresh_max_runtime_seconds
+        ),
         TRUST_PROXY=runtime_settings.trust_proxy,
         TRUSTED_PROXY_CIDRS=runtime_settings.TRUSTED_PROXY_CIDRS,
     )

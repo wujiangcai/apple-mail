@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Microsoft Graph token maintenance
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+Unit=mail-manager-refresh.service
+
+[Install]
+WantedBy=timers.target

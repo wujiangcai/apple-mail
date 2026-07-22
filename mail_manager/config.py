@@ -37,6 +37,9 @@ class Settings:
     rental_max_minutes: int = 10080
     rental_default_minutes: int = 60
     pickup_session_minutes: int = 60
+    token_refresh_workers: int = 2
+    token_refresh_batch_size: int = 100
+    token_refresh_max_runtime_seconds: int = 3600
     trust_proxy: bool = False
     TRUSTED_PROXY_CIDRS: tuple[IPv4Network | IPv6Network, ...] = (
         _DEFAULT_TRUSTED_PROXY_CIDRS
@@ -106,6 +109,18 @@ class Settings:
             ),
             pickup_session_minutes=_read_positive_int(
                 mapping, "pickup_session_minutes", "PICKUP_SESSION_MINUTES", 60
+            ),
+            token_refresh_workers=_read_positive_int(
+                mapping, "token_refresh_workers", "TOKEN_REFRESH_WORKERS", 2
+            ),
+            token_refresh_batch_size=_read_positive_int(
+                mapping, "token_refresh_batch_size", "TOKEN_REFRESH_BATCH_SIZE", 100
+            ),
+            token_refresh_max_runtime_seconds=_read_positive_int(
+                mapping,
+                "token_refresh_max_runtime_seconds",
+                "TOKEN_REFRESH_MAX_RUNTIME_SECONDS",
+                3600,
             ),
             trust_proxy=_read_bool(mapping, "trust_proxy", "TRUST_PROXY", False),
             TRUSTED_PROXY_CIDRS=_read_trusted_proxy_cidrs(mapping),

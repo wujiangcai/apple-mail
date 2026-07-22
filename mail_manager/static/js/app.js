@@ -252,6 +252,9 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   const pickupCodeValue = doc.querySelector("#pickup-code-value");
   const rentalExpiry = doc.querySelector("#rental-expiry");
   const rentalExpiryLabel = doc.querySelector("#rental-expiry-label");
+  const rentalLookupForm = doc.querySelector("#rental-lookup-form");
+  const rentalLookupCode = doc.querySelector("#rental-lookup-code");
+  const rentalLookupResult = doc.querySelector("#rental-lookup-result");
 
   function eraseReveal() {
     if (revealTimer !== null) {
@@ -293,6 +296,9 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     importText.value = "";
     importFile.value = "";
     mailKeyword.value = "";
+    rentalLookupCode.value = "";
+    rentalLookupResult.replaceChildren();
+    rentalLookupResult.hidden = true;
     mailList.replaceChildren();
     mailDetail.replaceChildren();
     closeAllDialogs();
@@ -606,6 +612,39 @@ export function bootstrap(doc = document, api = new ApiClient()) {
         await run(() => deleteAccount({ api, state, id }), "账号已删除");
         renderAccounts();
       }
+    } catch {
+      // The status region already contains the actionable API error.
+    }
+  });
+
+  rentalLookupForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const accessCode = rentalLookupCode.value;
+    rentalLookupCode.value = "";
+    rentalLookupResult.replaceChildren();
+    rentalLookupResult.hidden = true;
+    try {
+      const rental = await run(
+        () => api.post("/api/rentals/lookup", { accessCode }),
+        "已找到对应邮箱",
+      );
+      const email = doc.createElement("strong");
+      email.textContent = rental.email;
+      const details = doc.createElement("span");
+      const expiry = rental.expiresAt
+        ? new Date(rental.expiresAt).toLocaleString()
+        : "永不过期";
+      details.textContent = `租约 #${rental.id} · ${rental.status} · ${expiry} · 访问 ${rental.accessCount} 次`;
+      const copy = doc.createElement("button");
+      copy.type = "button";
+      copy.className = "table-action";
+      copy.textContent = "复制邮箱";
+      copy.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(rental.email);
+        setStatus(status, "邮箱已复制", "success");
+      });
+      rentalLookupResult.append(email, details, copy);
+      rentalLookupResult.hidden = false;
     } catch {
       // The status region already contains the actionable API error.
     }

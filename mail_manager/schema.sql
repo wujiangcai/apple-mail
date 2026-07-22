@@ -35,6 +35,27 @@ CREATE INDEX IF NOT EXISTS accounts_refresh_lease_expires_at_idx
     ON accounts (refresh_lease_expires_at)
     WHERE refresh_lease_token IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS accounts_token_maintenance_idx
+    ON accounts (token_valid, last_refresh_time, id);
+
+CREATE TABLE IF NOT EXISTS token_maintenance_runs (
+    id BIGSERIAL PRIMARY KEY,
+    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    finished_at TIMESTAMP WITH TIME ZONE,
+    status TEXT NOT NULL,
+    scanned_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    invalid_count INTEGER NOT NULL DEFAULT 0,
+    busy_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    CHECK (status IN ('running', 'completed', 'failed')),
+    CHECK (scanned_count >= 0 AND success_count >= 0),
+    CHECK (invalid_count >= 0 AND busy_count >= 0 AND failed_count >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS token_maintenance_runs_started_at_idx
+    ON token_maintenance_runs (started_at DESC);
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
     session_hash TEXT PRIMARY KEY,
     csrf_hash CHAR(64) NOT NULL,

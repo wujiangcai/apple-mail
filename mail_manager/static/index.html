@@ -115,6 +115,12 @@
           <div><p class="eyebrow">PICKUP RENTALS</p><h2 id="rentals-title">限时取件租约</h2></div>
           <button id="open-rental" class="button button-primary" type="button">创建租约</button>
         </div>
+        <form id="rental-lookup-form" class="rental-lookup-form">
+          <label for="rental-lookup-code">租用码查询邮箱</label>
+          <input id="rental-lookup-code" type="password" autocomplete="off" maxlength="256" required placeholder="输入完整租用码">
+          <button class="button button-outline" type="submit">查询</button>
+        </form>
+        <div id="rental-lookup-result" class="lookup-result" hidden></div>
         <div class="table-scroll">
           <table>
             <thead><tr><th>邮箱</th><th>状态</th><th>到期时间</th><th>访问次数</th><th>操作</th></tr></thead>

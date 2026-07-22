@@ -87,6 +87,16 @@
 
 旧版 `durationMinutes` 创建参数不再支持，调用方必须迁移到 `expiryMode`。
 
+### `POST /api/rentals/lookup`
+
+通过完整租用码精确反查邮箱：
+
+```json
+{"accessCode":"完整租用码"}
+```
+
+成功返回租约元数据，其中包含 `email`。有效、已过期和已撤销租约均可查询。不存在返回 `404`；响应设置 `Cache-Control: no-store`。禁止使用 GET 查询参数传递租用码。
+
 ### `POST /api/rentals/<id>/reveal-code`
 
 按需返回当前租用码：

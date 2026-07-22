@@ -9,6 +9,7 @@ import secrets
 import time
 from typing import Protocol
 
+import click
 import psycopg
 from flask import (
     Blueprint,
@@ -275,6 +276,66 @@ class PostgresMailRepository:
             raise RefreshPersistenceError("refresh lease release failed") from None
         return row is not None
 
+    def maintenance_account_ids(self, limit: int) -> list[int]:
+        if type(limit) is not int or not 1 <= limit <= 10000:
+            raise ValueError("limit must be from 1 to 10000")
+        with self._transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM accounts
+                WHERE token_valid = TRUE
+                ORDER BY last_refresh_time NULLS FIRST, id
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def begin_maintenance_run(self, now):
+        connection = db.connect_database(current_app.config["DATABASE_URL"])
+        acquired = connection.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+            ("mail-manager-token-maintenance",),
+        ).fetchone()[0]
+        if not acquired:
+            connection.close()
+            return None
+        row = connection.execute(
+            """
+            INSERT INTO token_maintenance_runs (started_at, status)
+            VALUES (%s, 'running') RETURNING id
+            """,
+            (now,),
+        ).fetchone()
+        connection.commit()
+        return connection, row[0]
+
+    def finish_maintenance_run(self, handle, now, counts, status="completed"):
+        connection, run_id = handle
+        try:
+            connection.execute(
+                """
+                UPDATE token_maintenance_runs
+                SET finished_at = %s, status = %s, scanned_count = %s,
+                    success_count = %s, invalid_count = %s,
+                    busy_count = %s, failed_count = %s
+                WHERE id = %s
+                """,
+                (
+                    now,
+                    status,
+                    counts["scanned"],
+                    counts["success"],
+                    counts["invalid"],
+                    counts["busy"],
+                    counts["failed"],
+                    run_id,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def set_bound(self, account_id: int, bound: bool, now: datetime) -> bool:
         _validate_account_id(account_id)
         now = _as_utc(now)
@@ -381,6 +442,45 @@ class TokenCoordinator:
             self._repository.release_refresh(account_id, lease)
         except BaseException:
             pass
+
+
+class TokenMaintenanceService:
+    def __init__(self, repository, coordinator, clock=lambda: datetime.now(UTC)):
+        self._repository = repository
+        self._coordinator = coordinator
+        self._clock = clock
+
+    def run(self, limit, max_runtime_seconds):
+        started = _as_utc(self._clock())
+        handle = self._repository.begin_maintenance_run(started)
+        if handle is None:
+            return None
+        counts = {"scanned": 0, "success": 0, "invalid": 0, "busy": 0, "failed": 0}
+        deadline = time.monotonic() + max_runtime_seconds
+        try:
+            for account_id in self._repository.maintenance_account_ids(limit):
+                if time.monotonic() >= deadline:
+                    counts["failed"] += 1
+                    break
+                counts["scanned"] += 1
+                try:
+                    self._coordinator.access_token(account_id)
+                    counts["success"] += 1
+                except (InvalidGrant, TokenInvalid):
+                    counts["invalid"] += 1
+                except RefreshBusy:
+                    counts["busy"] += 1
+                except (UpstreamRateLimited, UpstreamUnavailable, UpstreamProtocolError):
+                    counts["failed"] += 1
+        except BaseException:
+            self._repository.finish_maintenance_run(
+                handle, _as_utc(self._clock()), counts, "failed"
+            )
+            raise
+        self._repository.finish_maintenance_run(
+            handle, _as_utc(self._clock()), counts
+        )
+        return counts
 
 
 class MailService:
@@ -759,6 +859,24 @@ def random_unbound():
     return jsonify(account)
 
 
+@click.command("refresh-tokens")
+def refresh_tokens_command():
+    service = current_app.extensions["token_maintenance_service"]
+    counts = service.run(
+        current_app.config["TOKEN_REFRESH_BATCH_SIZE"],
+        current_app.config["TOKEN_REFRESH_MAX_RUNTIME_SECONDS"],
+    )
+    if counts is None:
+        click.echo("Token maintenance is already running.")
+        return
+    click.echo(
+        "Token maintenance completed: "
+        f"scanned={counts['scanned']} success={counts['success']} "
+        f"invalid={counts['invalid']} busy={counts['busy']} "
+        f"failed={counts['failed']}"
+    )
+
+
 def init_app(app: Flask) -> None:
     repository = app.config.get("MAIL_REPOSITORY")
     if repository is None:
@@ -772,4 +890,8 @@ def init_app(app: Flask) -> None:
     app.extensions["mail_service"] = MailService(
         repository, coordinator, graph_client_factory, clock
     )
+    app.extensions["token_maintenance_service"] = TokenMaintenanceService(
+        repository, coordinator, clock
+    )
+    app.cli.add_command(refresh_tokens_command)
     app.register_blueprint(blueprint)
