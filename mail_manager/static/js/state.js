@@ -11,6 +11,7 @@ function normalizeAccount(account) {
     tokenValid: account.tokenValid !== false,
     rentable: account.rentable !== false,
     rented: Boolean(account.rented),
+    hasRentalHistory: Boolean(account.hasRentalHistory),
   };
 }
 

@@ -29,6 +29,7 @@ test("account state retains metadata but discards credential fields", () => {
     tokenValid: true,
     rentable: true,
     rented: false,
+    hasRentalHistory: false,
   }]);
   expect(JSON.stringify(state.accounts)).not.toContain("secret");
 });

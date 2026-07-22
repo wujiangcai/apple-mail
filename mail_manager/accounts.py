@@ -5,6 +5,7 @@ import json
 import sys
 from typing import Protocol
 
+import psycopg
 from flask import (
     Blueprint,
     Flask,
@@ -38,6 +39,10 @@ class InvalidAccountPayload(ValueError):
 
 
 class AccountNotFound(LookupError):
+    pass
+
+
+class AccountHasRentalHistory(Exception):
     pass
 
 
@@ -118,7 +123,11 @@ class PostgresAccountRepository:
                            WHERE r.account_id = a.id AND r.ended_at IS NULL
                              AND (r.expires_at IS NULL
                                   OR r.expires_at > CURRENT_TIMESTAMP)
-                       ) AS rented
+                       ) AS rented,
+                       EXISTS (
+                           SELECT 1 FROM mailbox_rentals AS history
+                           WHERE history.account_id = a.id
+                       ) AS has_rental_history
                 FROM accounts AS a
                 ORDER BY a.id
                 """
@@ -252,29 +261,79 @@ class PostgresAccountRepository:
             SET {", ".join(assignments)}
             WHERE id = %s
             RETURNING id, email, last_refresh_time, bound, bound_at, token_valid,
-                      rentable, FALSE AS rented
+                      rentable, FALSE AS rented, EXISTS (
+                          SELECT 1 FROM mailbox_rentals
+                          WHERE account_id = accounts.id
+                      ) AS has_rental_history
         """
         with db.transaction(self._connection()) as connection:
             row = connection.execute(statement, tuple(parameters)).fetchone()
         return None if row is None else _metadata_from_row(row)
 
     def delete_account(self, account_id: int) -> bool:
-        with db.transaction(self._connection()) as connection:
-            row = connection.execute(
-                "DELETE FROM accounts WHERE id = %s RETURNING id",
-                (account_id,),
-            ).fetchone()
-        return row is not None
+        try:
+            with db.transaction(self._connection()) as connection:
+                row = connection.execute(
+                    """
+                    DELETE FROM accounts AS a
+                    WHERE a.id = %s
+                      AND NOT EXISTS (
+                          SELECT 1 FROM mailbox_rentals AS r
+                          WHERE r.account_id = a.id
+                      )
+                    RETURNING a.id
+                    """,
+                    (account_id,),
+                ).fetchone()
+                if row is not None:
+                    return True
+                exists = connection.execute(
+                    "SELECT 1 FROM accounts WHERE id = %s", (account_id,)
+                ).fetchone()
+        except psycopg.errors.ForeignKeyViolation:
+            raise AccountHasRentalHistory from None
+        if exists is not None:
+            raise AccountHasRentalHistory
+        return False
 
     def delete_accounts(self, account_ids: Sequence[int]) -> bool:
         pending = list(account_ids)
-        with db.transaction(self._connection()) as connection:
-            rows = connection.execute(
-                "DELETE FROM accounts WHERE id = ANY(%s) RETURNING id",
-                (pending,),
-            ).fetchall()
-            if {row[0] for row in rows} != set(pending):
-                raise AccountNotFound
+        try:
+            with db.transaction(self._connection()) as connection:
+                rows = connection.execute(
+                    """
+                    WITH requested AS (
+                        SELECT a.id, EXISTS (
+                            SELECT 1 FROM mailbox_rentals AS r
+                            WHERE r.account_id = a.id
+                        ) AS has_history
+                        FROM accounts AS a
+                        WHERE a.id = ANY(%s)
+                        FOR UPDATE OF a
+                    ),
+                    blocked AS (
+                        SELECT 1 FROM requested WHERE has_history LIMIT 1
+                    ),
+                    deleted AS (
+                        DELETE FROM accounts AS a
+                        WHERE a.id IN (SELECT id FROM requested)
+                          AND NOT EXISTS (SELECT 1 FROM blocked)
+                        RETURNING a.id
+                    )
+                    SELECT id, FALSE AS has_history FROM deleted
+                    UNION ALL
+                    SELECT id, TRUE AS has_history
+                    FROM requested WHERE has_history
+                    """,
+                    (pending,),
+                ).fetchall()
+                returned_ids = {row[0] for row in rows}
+                if any(row[1] for row in rows):
+                    raise AccountHasRentalHistory
+                if returned_ids != set(pending):
+                    raise AccountNotFound
+        except psycopg.errors.ForeignKeyViolation:
+            raise AccountHasRentalHistory from None
         return True
 
 
@@ -375,9 +434,22 @@ def _as_utc(value: datetime) -> datetime:
 def _metadata_from_row(row: Sequence[object]) -> AccountMetadata:
     if len(row) == 6:
         account_id, email, refreshed, bound, bound_at, token_valid = row
-        rentable, rented = True, False
-    else:
+        rentable, rented, has_rental_history = True, False, False
+    elif len(row) == 8:
         account_id, email, refreshed, bound, bound_at, token_valid, rentable, rented = row
+        has_rental_history = rented
+    else:
+        (
+            account_id,
+            email,
+            refreshed,
+            bound,
+            bound_at,
+            token_valid,
+            rentable,
+            rented,
+            has_rental_history,
+        ) = row
     return AccountMetadata(
         id=account_id,
         email=email,
@@ -387,6 +459,7 @@ def _metadata_from_row(row: Sequence[object]) -> AccountMetadata:
         token_valid=token_valid,
         rentable=rentable,
         rented=rented,
+        has_rental_history=has_rental_history,
     )
 
 
@@ -406,6 +479,7 @@ def _serialize_metadata(account: AccountMetadata) -> dict[str, object]:
         "tokenValid": account.token_valid,
         "rentable": account.rentable,
         "rented": account.rented,
+        "hasRentalHistory": account.has_rental_history,
     }
     return result
 
@@ -546,6 +620,8 @@ def update_account(account_id: int):
 def delete_account(account_id: int):
     try:
         _service().delete(account_id)
+    except AccountHasRentalHistory:
+        return jsonify(error="account has rental history"), 409
     except AccountNotFound:
         return _not_found_response()
     return jsonify(deleted=True)
@@ -557,6 +633,8 @@ def delete_accounts():
         deleted = _service().delete_batch(request.get_json(silent=True))
     except InvalidAccountPayload as error:
         return _invalid_payload_response(error)
+    except AccountHasRentalHistory:
+        return jsonify(error="account has rental history"), 409
     except AccountNotFound:
         return _not_found_response()
     return jsonify(deleted=deleted)

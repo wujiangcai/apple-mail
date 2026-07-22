@@ -252,6 +252,8 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   const pickupCodeValue = doc.querySelector("#pickup-code-value");
   const rentalExpiry = doc.querySelector("#rental-expiry");
   const rentalExpiryLabel = doc.querySelector("#rental-expiry-label");
+  const rentalAccountSelect = doc.querySelector("#rental-account");
+  const rentalAccountHint = doc.querySelector("#rental-account-hint");
   const rentalLookupForm = doc.querySelector("#rental-lookup-form");
   const rentalLookupCode = doc.querySelector("#rental-lookup-code");
   const rentalLookupResult = doc.querySelector("#rental-lookup-result");
@@ -338,9 +340,33 @@ export function bootstrap(doc = document, api = new ApiClient()) {
       && pagination.items.every((account) => selectedIds.has(account.id));
   }
 
+  function refreshRentalAccountOptions(selectedId = "") {
+    rentalAccountSelect.replaceChildren();
+    const automatic = doc.createElement("option");
+    automatic.value = "";
+    automatic.textContent = "自动分配可用邮箱";
+    rentalAccountSelect.append(automatic);
+    const available = state.accounts.filter(
+      (account) => account.rentable && account.tokenValid && !account.rented,
+    );
+    for (const account of available) {
+      const option = doc.createElement("option");
+      option.value = String(account.id);
+      option.textContent = account.email;
+      rentalAccountSelect.append(option);
+    }
+    rentalAccountSelect.value = available.some(
+      (account) => String(account.id) === String(selectedId),
+    ) ? String(selectedId) : "";
+    rentalAccountHint.textContent = available.length
+      ? `可指定 ${available.length} 个邮箱；也可由系统自动分配。`
+      : "暂无可指定邮箱，自动分配也可能失败。";
+  }
+
   async function refreshAccounts() {
     await loadAccounts({ api, state });
     renderAccounts();
+    refreshRentalAccountOptions();
   }
 
   function renderRentals() {
@@ -667,6 +693,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
 
   doc.querySelector("#open-import").addEventListener("click", () => showDialog(importDialog));
   doc.querySelector("#open-rental").addEventListener("click", () => {
+    refreshRentalAccountOptions();
     setDefaultRentalExpiry();
     syncExpiryMode();
     showDialog(rentalDialog);
@@ -676,7 +703,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   });
   rentalForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const accountValue = doc.querySelector("#rental-account").value.trim();
+    const accountValue = rentalAccountSelect.value;
     const expiryMode = rentalForm.querySelector('input[name="expiry-mode"]:checked').value;
     const body = { expiryMode };
     if (expiryMode === "at") {
@@ -800,6 +827,17 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     const ids = [...selectedIds];
     if (ids.length === 0) {
       setStatus(status, "请先选择账号", "error");
+      return;
+    }
+    const protectedAccounts = state.accounts.filter(
+      (account) => selectedIds.has(account.id) && account.hasRentalHistory,
+    );
+    if (protectedAccounts.length > 0) {
+      setStatus(
+        status,
+        `以下邮箱存在租约历史，不能删除：${protectedAccounts.map((item) => item.email).join("、")}`,
+        "error",
+      );
       return;
     }
     try {

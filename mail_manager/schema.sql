@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS mailbox_rentals (
     CHECK (revoked_at IS NULL OR ended_at IS NOT NULL)
 );
 
+CREATE INDEX IF NOT EXISTS mailbox_rentals_account_id_idx
+    ON mailbox_rentals (account_id);
+
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_rentals_active_account_idx
     ON mailbox_rentals (account_id)
     WHERE ended_at IS NULL;

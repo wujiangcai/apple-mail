@@ -31,6 +31,24 @@
 - `PATCH /api/accounts/<id>`
 - `DELETE /api/accounts/<id>`
 
+账号列表元数据额外包含：
+
+```json
+{"rentable":true,"rented":false,"hasRentalHistory":true}
+```
+
+`hasRentalHistory=true` 表示账号存在任意历史租约，单删或批量删除将返回：
+
+```http
+409 Conflict
+```
+
+```json
+{"error":"account has rental history"}
+```
+
+创建租约的 `accountId` 是内部 API 字段；管理页面使用邮箱下拉选项自动提交，管理员无需手工输入。
+
 `PATCH` 支持布尔字段 `bound` 和 `rentable`。客户会话不能访问这些接口。
 
 ## 租约管理

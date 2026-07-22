@@ -140,8 +140,11 @@
         <button class="icon-button" type="button" data-close-dialog="#rental-dialog" aria-label="关闭">×</button>
       </div>
       <p class="hint">留空邮箱将从可用邮箱池自动分配。取件码只显示一次。</p>
-      <label for="rental-account">邮箱账号 ID（可选）</label>
-      <input id="rental-account" type="number" min="1" inputmode="numeric">
+      <label for="rental-account">指定邮箱（可选）</label>
+      <select id="rental-account">
+        <option value="">自动分配可用邮箱</option>
+      </select>
+      <p id="rental-account-hint" class="hint">仅显示可出租、授权有效且未在租用中的邮箱。</p>
       <fieldset class="expiry-options">
         <legend>租约期限</legend>
         <label><input type="radio" name="expiry-mode" value="at" checked> 指定到期时间</label>

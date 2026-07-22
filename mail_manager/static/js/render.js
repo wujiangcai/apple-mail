@@ -55,12 +55,17 @@ export function renderAccountRow(parent, account, { selected = false } = {}) {
   rentalCell.append(statusBadge(Boolean(account.rented), "租用中", account.rentable ? "可出租" : "已停用"));
   const refreshCell = element("td", "account-refresh", account.lastRefreshTime || "尚未刷新");
   const actionsCell = element("td", "account-actions");
+  const deleteButton = actionButton("delete", account.hasRentalHistory ? "保留记录" : "删除", account.id);
+  if (account.hasRentalHistory) {
+    deleteButton.disabled = true;
+    deleteButton.title = "存在租约历史，不能删除；可以停止出租";
+  }
   actionsCell.append(
     actionButton("reveal", "查看", account.id),
     actionButton("mail", "邮件", account.id),
     actionButton("toggle-bound", account.bound ? "取消绑定" : "标记绑定", account.id),
     actionButton("toggle-rentable", account.rentable ? "停止出租" : "恢复出租", account.id),
-    actionButton("delete", "删除", account.id),
+    deleteButton,
   );
 
   row.append(selectionCell, emailCell, boundCell, tokenCell, rentalCell, refreshCell, actionsCell);

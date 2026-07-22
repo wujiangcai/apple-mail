@@ -16,6 +16,7 @@ class AccountMetadata:
     token_valid: bool
     rentable: bool = True
     rented: bool = False
+    has_rental_history: bool = False
 
 
 @dataclass(frozen=True)

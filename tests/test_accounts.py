@@ -119,6 +119,7 @@ def test_authenticated_account_list_returns_metadata_only(account_app):
             "tokenValid": True,
             "rentable": True,
             "rented": False,
+            "hasRentalHistory": False,
         },
         {
             "id": 2,
@@ -129,6 +130,7 @@ def test_authenticated_account_list_returns_metadata_only(account_app):
             "tokenValid": False,
             "rentable": True,
             "rented": False,
+            "hasRentalHistory": False,
         },
     ]
     rendered = response.get_data(as_text=True)
@@ -803,7 +805,7 @@ def test_postgres_credentials_patch_and_deletes_are_parameterized():
     assert PostgresAccountRepository(delete_connection).delete_account(7) is True
     assert delete_connection.executed[0][1] == (7,)
 
-    batch_connection = RecordingConnection(rows=[(7,), (8,)])
+    batch_connection = RecordingConnection(rows=[(7, False), (8, False)])
     assert PostgresAccountRepository(batch_connection).delete_accounts([7, 8]) is True
     assert batch_connection.executed[0][1] == ([7, 8],)
 
