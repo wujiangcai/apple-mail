@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f4efe4">
+  <title>小苹果 · 邮箱管理</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/js/app.js"></script>
+</head>
+<body data-app-root>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <main id="login-view" class="login-shell">
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">小</div>
+      <p class="eyebrow">PRIVATE MAIL DESK</p>
+      <h1 id="login-title">小苹果</h1>
+      <p class="login-copy">集中查看邮箱状态，不让凭据停留在浏览器里。</p>
+      <form id="login-form" class="login-form" method="post" action="/api/login">
+        <label for="login-password">管理访问密码</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        <button class="button button-primary button-wide" type="submit">进入工作台</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="dashboard" class="app-shell" hidden>
+    <header class="topbar">
+      <a class="brand-lockup" href="/" aria-label="小苹果首页">
+        <span class="brand-mark brand-mark-small" aria-hidden="true">小</span>
+        <span><strong>小苹果</strong><small>Mailbox atelier</small></span>
+      </a>
+      <div class="topbar-actions">
+        <button id="random-unbound" class="button button-quiet" type="button">随机未绑定</button>
+        <button id="logout-button" class="button button-outline" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="hero-panel">
+        <div>
+          <p class="eyebrow">ACCOUNT ORCHARD</p>
+          <h1>邮箱果园</h1>
+          <p>凭据按需显现，邮件在隔离环境中阅读。</p>
+        </div>
+        <div class="hero-actions">
+          <button id="open-import" class="button button-primary" type="button">导入账号</button>
+          <button id="export-button" class="button button-outline" type="button">导出 JSONL</button>
+        </div>
+      </section>
+
+      <section class="stats-grid" aria-label="账号概况">
+        <article class="stat-card stat-total"><span>全部账号</span><strong id="total-stat">0</strong></article>
+        <article class="stat-card stat-bound"><span>已经绑定</span><strong id="bound-stat">0</strong></article>
+        <article class="stat-card stat-invalid"><span>令牌失效</span><strong id="invalid-stat">0</strong></article>
+      </section>
+
+      <section class="account-panel" aria-labelledby="accounts-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">LIVE INVENTORY</p>
+            <h2 id="accounts-title">账号清单</h2>
+          </div>
+          <div class="batch-actions">
+            <button id="check-bound" class="button button-quiet" type="button">检测绑定</button>
+            <button id="delete-selected" class="button button-danger" type="button">批量删除</button>
+          </div>
+        </div>
+
+        <div class="filter-row">
+          <label class="search-box" for="search-input">
+            <span>搜索</span>
+            <input id="search-input" type="search" placeholder="按邮箱筛选" autocomplete="off">
+          </label>
+          <label class="page-size" for="page-size">
+            每页
+            <select id="page-size">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th><input id="select-all" type="checkbox" aria-label="选择当前页全部账号"></th>
+                <th>邮箱</th>
+                <th>绑定</th>
+                <th>令牌</th>
+                <th>出租状态</th>
+                <th>最近刷新</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="account-rows"></tbody>
+          </table>
+        </div>
+
+        <nav class="pagination" aria-label="账号分页">
+          <button id="previous-page" class="button button-quiet" type="button">上一页</button>
+          <span id="page-label">1 / 1</span>
+          <button id="next-page" class="button button-quiet" type="button">下一页</button>
+        </nav>
+      </section>
+
+      <section class="account-panel" aria-labelledby="rentals-title">
+        <div class="panel-heading">
+          <div><p class="eyebrow">PICKUP RENTALS</p><h2 id="rentals-title">限时取件租约</h2></div>
+          <button id="open-rental" class="button button-primary" type="button">创建租约</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>邮箱</th><th>状态</th><th>到期时间</th><th>访问次数</th><th>操作</th></tr></thead>
+            <tbody id="rental-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <p id="app-status" class="app-status" data-tone="neutral" role="status" aria-live="polite"></p>
+
+  <dialog id="rental-dialog" class="dialog-card">
+    <form id="rental-form">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">NEW PICKUP</p><h2>创建邮箱租约</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="#rental-dialog" aria-label="关闭">×</button>
+      </div>
+      <p class="hint">留空邮箱将从可用邮箱池自动分配。取件码只显示一次。</p>
+      <label for="rental-account">邮箱账号 ID（可选）</label>
+      <input id="rental-account" type="number" min="1" inputmode="numeric">
+      <fieldset class="expiry-options">
+        <legend>租约期限</legend>
+        <label><input type="radio" name="expiry-mode" value="at" checked> 指定到期时间</label>
+        <label><input type="radio" name="expiry-mode" value="never"> 永不过期</label>
+      </fieldset>
+      <label id="rental-expiry-label" for="rental-expiry">到期日期和时间</label>
+      <input id="rental-expiry" type="datetime-local" required>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" data-close-dialog="#rental-dialog">取消</button>
+        <button class="button button-primary" type="submit">创建并显示取件码</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pickup-code-dialog" class="dialog-card">
+    <div class="dialog-heading">
+      <div><p class="eyebrow">ONE-TIME SECRET</p><h2>客户取件码</h2></div>
+      <button class="icon-button" type="button" data-close-dialog="#pickup-code-dialog" aria-label="关闭">×</button>
+    </div>
+    <p class="hint">请立即交给客户。关闭或刷新后无法再次查看。</p>
+    <p id="pickup-code-value" class="pickup-code"></p>
+    <div class="dialog-actions"><button id="copy-pickup-code" class="button button-primary" type="button">复制取件码</button></div>
+  </dialog>
+
+  <dialog id="import-dialog" class="dialog-card">
+    <form id="import-form">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">IN MEMORY</p><h2>导入账号</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="#import-dialog" aria-label="关闭">×</button>
+      </div>
+      <p class="hint">支持 JSONL，或每行 <code>邮箱----密码----Client ID----Refresh Token</code>。内容仅用于本次请求。</p>
+      <label for="import-file">选择文件</label>
+      <input id="import-file" type="file" accept=".txt,.jsonl,application/x-ndjson,text/plain">
+      <div class="or-rule"><span>或粘贴</span></div>
+      <label for="import-text">账号内容</label>
+      <textarea id="import-text" rows="9" spellcheck="false" autocomplete="off"></textarea>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" data-close-dialog="#import-dialog">取消</button>
+        <button class="button button-primary" type="submit">安全导入</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="reveal-dialog" class="dialog-card reveal-dialog">
+    <div class="dialog-heading">
+      <div><p class="eyebrow">60 SECOND VIEW</p><h2>临时凭据</h2></div>
+      <button class="icon-button" type="button" data-close-dialog="#reveal-dialog" aria-label="关闭">×</button>
+    </div>
+    <p class="hint">这些值只存在于当前页面内存，60 秒后自动清除。</p>
+    <dl class="secret-list">
+      <div><dt>邮箱</dt><dd id="secret-email"></dd><button type="button" data-copy-secret="email">复制</button></div>
+      <div><dt>密码</dt><dd id="secret-password"></dd><button type="button" data-copy-secret="password">复制</button></div>
+      <div><dt>Client ID</dt><dd id="secret-clientId"></dd><button type="button" data-copy-secret="clientId">复制</button></div>
+      <div><dt>Refresh Token</dt><dd id="secret-refreshToken"></dd><button type="button" data-copy-secret="refreshToken">复制</button></div>
+    </dl>
+  </dialog>
+
+  <dialog id="mail-dialog" class="mail-dialog">
+    <div class="dialog-heading mail-dialog-heading">
+      <div><p class="eyebrow">ISOLATED READER</p><h2 id="mail-account">邮件</h2></div>
+      <button class="icon-button" type="button" data-close-dialog="#mail-dialog" aria-label="关闭">×</button>
+    </div>
+    <div class="mail-tools">
+      <div class="folder-tabs" role="group" aria-label="邮件文件夹">
+        <button class="button button-quiet" type="button" data-folder="inbox">收件箱</button>
+        <button class="button button-quiet" type="button" data-folder="junkemail">垃圾邮件</button>
+      </div>
+      <div class="verify-tools">
+        <label for="mail-keyword">验证码关键词</label>
+        <input id="mail-keyword" type="search" maxlength="128" placeholder="可选">
+        <button id="verify-code" class="button button-primary" type="button">提取验证码</button>
+      </div>
+    </div>
+    <div class="mail-layout">
+      <aside>
+        <div id="mail-list" class="mail-list"></div>
+        <nav class="pagination compact" aria-label="邮件分页">
+          <button id="mail-previous" class="button button-quiet" type="button">上一页</button>
+          <span id="mail-page-label">1 / 1</span>
+          <button id="mail-next" class="button button-quiet" type="button">下一页</button>
+        </nav>
+      </aside>
+      <section id="mail-detail" class="mail-detail" aria-live="polite"></section>
+    </div>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>小苹果 · 邮箱取件</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/js/pickup-app.js"></script>
+</head>
+<body data-pickup-root>
+  <main id="pickup-login" class="login-shell">
+    <section class="login-card">
+      <div class="brand-mark" aria-hidden="true">取</div>
+      <p class="eyebrow">MAIL PICKUP</p>
+      <h1>邮箱取件</h1>
+      <p class="login-copy">输入管理员提供的限时取件码。</p>
+      <form id="pickup-login-form" class="login-form">
+        <label for="pickup-code">取件码</label>
+        <input id="pickup-code" type="password" autocomplete="one-time-code" required>
+        <button class="button button-primary button-wide" type="submit">进入邮箱</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="pickup-dashboard" class="app-shell" hidden>
+    <header class="topbar">
+      <span class="brand-lockup"><span class="brand-mark brand-mark-small">取</span><span><strong id="pickup-email">邮箱取件</strong><small id="pickup-expiry"></small></span></span>
+      <button id="pickup-logout" class="button button-outline" type="button">退出</button>
+    </header>
+    <main class="workspace">
+      <section class="account-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">ISOLATED READER</p><h1>限时邮箱</h1></div>
+          <div class="folder-tabs">
+            <button class="button button-quiet" type="button" data-pickup-folder="inbox">收件箱</button>
+            <button class="button button-quiet" type="button" data-pickup-folder="junkemail">垃圾邮件</button>
+          </div>
+        </div>
+        <div class="verify-tools">
+          <label for="pickup-keyword">验证码关键词</label>
+          <input id="pickup-keyword" type="search" maxlength="128" placeholder="可选">
+          <button id="pickup-verify" class="button button-primary" type="button">提取验证码</button>
+        </div>
+        <div class="mail-layout">
+          <aside><div id="pickup-mail-list" class="mail-list"></div></aside>
+          <section id="pickup-mail-detail" class="mail-detail"></section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <p id="pickup-status" class="app-status" role="status" aria-live="polite"></p>
+</body>
+</html>

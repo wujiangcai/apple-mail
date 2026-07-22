@@ -1,0 +1,48 @@
+[Unit]
+Description=Xiaopingguo Mail Manager
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mail-manager
+Group=mail-manager
+WorkingDirectory=/opt/mail-manager
+EnvironmentFile=/etc/mail-manager/mail-manager.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/mail-manager/.venv/bin/flask --app "mail_manager:create_app()" init-db
+ExecStart=/opt/mail-manager/.venv/bin/gunicorn --workers 4 --worker-class sync --timeout 30 --graceful-timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 100 --bind 127.0.0.1:5000 "mail_manager:create_app()"
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=45s
+KillSignal=SIGQUIT
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+LimitNOFILE=4096
+TasksMax=128
+MemoryMax=1G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

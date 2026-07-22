@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiaopingguo-mail-manager"
+version = "1.0.0"
+description = "小苹果邮箱助手：基于 Flask、PostgreSQL 与 Microsoft Graph 的安全邮箱管理工具"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-only"
+authors = [
+    { name = "jiuwovo", email = "jiuwovo@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Flask",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "Flask>=3.1,<4",
+    "psycopg[binary]>=3,<4",
+    "cryptography",
+    "requests",
+    "gunicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "requests-mock",
+    "ruff",
+    "pip-audit",
+    "pip-tools",
+    "PyYAML>=6,<7",
+    "typing-extensions>=4.6,<5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "postgres: tests that require TEST_DATABASE_URL and a dedicated PostgreSQL database",
+]
+
+[tool.setuptools]
+packages = ["mail_manager"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+mail_manager = ["schema.sql", "static/**"]
+
+[tool.ruff]
+target-version = "py312"
