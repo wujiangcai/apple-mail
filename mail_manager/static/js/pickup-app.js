@@ -2,6 +2,9 @@ import { ApiClient } from "./api.js";
 import { renderMailDetail, renderMailList, setStatus } from "./render.js";
 
 
+const MAIL_TIMEOUT_MS = 75_000;
+
+
 export function bootstrapPickup(doc = document, api = new ApiClient()) {
   const root = doc.querySelector("[data-pickup-root]");
   if (!root) return null;
@@ -22,6 +25,9 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   let rentalExpiresAt = null;
   let permanent = false;
   let countdown = null;
+  let authEpoch = 0;
+  let mailRequestVersion = 0;
+  let detailRequestVersion = 0;
 
   function friendlyError(error) {
     const message = String(error?.message || "");
@@ -29,6 +35,9 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
       ["invalid or expired pickup code", "取件码无效、已过期或已被撤销"],
       ["pickup authorization required", "取件授权已失效，请重新输入取件码"],
       ["account token invalid", "邮箱授权已失效，请联系管理员重新授权"],
+      ["mailbox authorization unavailable", "邮箱授权不可用，请联系管理员处理"],
+      ["mail access authorization rejected", "Microsoft 已拒绝邮箱授权，请联系管理员重新授权"],
+      ["mail access permission denied", "邮箱缺少 Mail.Read 权限，请联系管理员处理"],
       ["upstream rate limited", "Microsoft 服务请求过多，请稍后再试"],
       ["upstream unavailable", "Microsoft 邮箱服务暂时不可用，请稍后再试"],
       ["not found", "没有找到验证码或邮件"],
@@ -39,6 +48,10 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   }
 
   function clearMailbox() {
+    authEpoch += 1;
+    mailRequestVersion += 1;
+    detailRequestVersion += 1;
+    api.abortAll?.();
     messages = [];
     list.replaceChildren();
     detail.replaceChildren();
@@ -93,9 +106,52 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   }
 
   async function loadMail() {
-    messages = await api.post("/api/pickup/mail", { folder, limit: 100 });
+    const requestVersion = ++mailRequestVersion;
+    const requestEpoch = authEpoch;
+    const requestedFolder = folder;
+    detailRequestVersion += 1;
+    messages = [];
     renderMailList(list, messages);
     renderMailDetail(detail, null);
+    const loaded = await api.post(
+      "/api/pickup/mail",
+      { folder: requestedFolder, limit: 100 },
+      { timeoutMs: MAIL_TIMEOUT_MS },
+    );
+    if (requestVersion !== mailRequestVersion
+        || requestEpoch !== authEpoch
+        || requestedFolder !== folder) {
+      return false;
+    }
+    messages = loaded;
+    renderMailList(list, messages);
+    renderMailDetail(detail, null);
+    return true;
+  }
+
+  async function loadMessage(message) {
+    const requestVersion = ++detailRequestVersion;
+    const requestEpoch = authEpoch;
+    const requestedFolder = folder;
+    renderMailDetail(detail, null);
+    const loaded = await api.post(
+      "/api/pickup/mail/message",
+      { messageId: message.id },
+      { timeoutMs: MAIL_TIMEOUT_MS },
+    );
+    if (requestVersion !== detailRequestVersion
+        || requestEpoch !== authEpoch
+        || requestedFolder !== folder
+        || dashboard.hidden) {
+      return;
+    }
+    renderMailDetail(detail, {
+      ...loaded,
+      receivedAt: loaded.date,
+      body: loaded.html
+        ? { contentType: "html", content: loaded.html }
+        : { contentType: "text", content: loaded.bodyPreview || "" },
+    });
   }
 
   form.addEventListener("submit", async (event) => {
@@ -127,17 +183,16 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
     });
   });
 
-  list.addEventListener("click", (event) => {
+  list.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-mail-index]");
     if (!item) return;
     const message = messages[Number(item.dataset.mailIndex)];
-    renderMailDetail(detail, {
-      ...message,
-      receivedAt: message.date,
-      body: message.html
-        ? { contentType: "html", content: message.html }
-        : { contentType: "text", content: message.bodyPreview || "" },
-    });
+    try {
+      await loadMessage(message);
+    } catch (error) {
+      renderMailDetail(detail, null);
+      setStatus(status, friendlyError(error), "error");
+    }
   });
 
   doc.querySelector("#pickup-refresh").addEventListener("click", async () => {
@@ -155,7 +210,11 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
       ? { keyword: value, maxResults: 100, folder }
       : { maxResults: 100, folder };
     try {
-      const result = await api.post("/api/pickup/verify-code", body);
+      const result = await api.post(
+        "/api/pickup/verify-code",
+        body,
+        { timeoutMs: MAIL_TIMEOUT_MS },
+      );
       setStatus(status, `验证码：${result.code}`, "success");
       await navigator.clipboard?.writeText(result.code);
     } catch (error) {

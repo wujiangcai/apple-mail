@@ -53,6 +53,23 @@ test("request timeout aborts fetch and raises a typed error", async () => {
 });
 
 
+test("a request can override the default timeout", async () => {
+  vi.useFakeTimers();
+  fetch.mockImplementation((_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason));
+  }));
+  const api = new ApiClient({ timeoutMs: 20 });
+
+  const pending = api.get("/api/accounts", { timeoutMs: 50 });
+  const rejection = expect(pending).rejects.toMatchObject({ code: "TIMEOUT" });
+  await vi.advanceTimersByTimeAsync(20);
+  expect(api.activeRequestCount).toBe(1);
+  await vi.advanceTimersByTimeAsync(30);
+  await rejection;
+  vi.useRealTimers();
+});
+
+
 test("401 responses emit an authentication event", async () => {
   fetch.mockResolvedValue(Response.json({ error: "authentication required" }, { status: 401 }));
   const api = new ApiClient();

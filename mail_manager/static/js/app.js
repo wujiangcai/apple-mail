@@ -13,6 +13,7 @@ const IMPORT_FIELDS = ["email", "password", "clientId", "refreshToken"];
 const IMPORT_LIMIT = 1000;
 const REVEAL_TTL_MS = 60_000;
 const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+const MAIL_TIMEOUT_MS = 75_000;
 const STALE_RESULT = Symbol("stale-result");
 const accountLoads = new WeakMap();
 
@@ -207,6 +208,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
   let mailItemsPerPage = 20;
   let revealTimer = null;
   let mailRequestVersion = 0;
+  let mailDetailRequestVersion = 0;
   let revealRequestVersion = 0;
   let verifyRequestVersion = 0;
   let authEpoch = 0;
@@ -291,6 +293,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     api.abortAll();
     cancelAccountLoads(state);
     mailRequestVersion += 1;
+    mailDetailRequestVersion += 1;
     revealRequestVersion += 1;
     verifyRequestVersion += 1;
     activeAccountId = null;
@@ -468,7 +471,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     const messages = await api.post(`/api/accounts/${accountId}/mail`, {
       folder,
       limit: 100,
-    });
+    }, { timeoutMs: MAIL_TIMEOUT_MS });
     if (requestVersion !== mailRequestVersion || requestEpoch !== authEpoch) {
       return false;
     }
@@ -476,6 +479,34 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     mailPage = 1;
     renderMailPage();
     return true;
+  }
+
+  async function loadMailDetail(message) {
+    const requestVersion = ++mailDetailRequestVersion;
+    const requestEpoch = authEpoch;
+    const accountId = activeAccountId;
+    const folder = activeFolder;
+    const messageId = message.id;
+    renderMailDetail(mailDetail, null);
+    const detail = await api.post(
+      `/api/accounts/${accountId}/mail/message`,
+      { messageId },
+      { timeoutMs: MAIL_TIMEOUT_MS },
+    );
+    if (requestVersion !== mailDetailRequestVersion
+        || requestEpoch !== authEpoch
+        || accountId !== activeAccountId
+        || folder !== activeFolder
+        || !mailDialog.hasAttribute("open")) {
+      return;
+    }
+    renderMailDetail(mailDetail, {
+      ...detail,
+      receivedAt: detail.date,
+      body: detail.html
+        ? { contentType: "html", content: detail.html }
+        : { contentType: "text", content: detail.bodyPreview || "" },
+    });
   }
 
   async function run(action, successMessage, expectedEpoch = authEpoch) {
@@ -636,12 +667,28 @@ export function bootstrap(doc = document, api = new ApiClient()) {
           closeDialog(revealDialog);
         }, REVEAL_TTL_MS);
       } else if (button.dataset.action === "mail") {
+        mailRequestVersion += 1;
+        mailDetailRequestVersion += 1;
         activeAccountId = id;
         activeFolder = "inbox";
+        mailMessages = [];
+        mailPage = 1;
         verifyRequestVersion += 1;
+        mailKeyword.value = "";
+        renderMailPage();
         doc.querySelector("#mail-account").textContent = account.email;
         showDialog(mailDialog);
         await run(refreshMail, "邮件已载入");
+      } else if (button.dataset.action === "recheck-authorization") {
+        await run(
+          () => api.post(
+            `/api/accounts/${id}/recheck-authorization`,
+            {},
+            { timeoutMs: MAIL_TIMEOUT_MS },
+          ),
+          "邮箱授权已恢复",
+        );
+        await refreshAccounts();
       } else if (button.dataset.action === "toggle-bound") {
         await run(
           () => updateAccount({ api, state, id, changes: { bound: !account.bound } }),
@@ -799,7 +846,11 @@ export function bootstrap(doc = document, api = new ApiClient()) {
       }
       if (dialog === mailDialog) {
         mailRequestVersion += 1;
+        mailDetailRequestVersion += 1;
         verifyRequestVersion += 1;
+        mailMessages = [];
+        mailList.replaceChildren();
+        mailDetail.replaceChildren();
       }
       if (dialog === pickupCodeDialog) {
         activePickupCode = "";
@@ -916,6 +967,8 @@ export function bootstrap(doc = document, api = new ApiClient()) {
 
   doc.querySelectorAll("[data-folder]").forEach((button) => {
     button.addEventListener("click", async () => {
+      mailDetailRequestVersion += 1;
+      renderMailDetail(mailDetail, null);
       activeFolder = button.dataset.folder;
       try {
         await run(refreshMail, "邮件已载入");
@@ -924,20 +977,19 @@ export function bootstrap(doc = document, api = new ApiClient()) {
       }
     });
   });
-  mailList.addEventListener("click", (event) => {
+  mailList.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-mail-index]");
     if (!item) {
       return;
     }
     const offset = (mailPage - 1) * mailItemsPerPage;
     const message = mailMessages[offset + Number(item.dataset.mailIndex)];
-    renderMailDetail(mailDetail, {
-      ...message,
-      receivedAt: message.date,
-      body: message.html
-        ? { contentType: "html", content: message.html }
-        : { contentType: "text", content: message.bodyPreview || "" },
-    });
+    try {
+      await loadMailDetail(message);
+    } catch (error) {
+      renderMailDetail(mailDetail, null);
+      setStatus(status, errorMessage(error), "error");
+    }
   });
   mailPrevious.addEventListener("click", () => {
     mailPage -= 1;
@@ -954,7 +1006,11 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     const body = keyword ? { keyword, maxResults: 100 } : { maxResults: 100 };
     try {
       const result = await run(
-        () => api.post(`/api/accounts/${activeAccountId}/verify-code`, body),
+        () => api.post(
+          `/api/accounts/${activeAccountId}/verify-code`,
+          body,
+          { timeoutMs: MAIL_TIMEOUT_MS },
+        ),
         "验证码已找到",
         requestEpoch,
       );

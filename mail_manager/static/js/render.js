@@ -50,9 +50,12 @@ export function renderAccountRow(parent, account, { selected = false } = {}) {
   const boundCell = document.createElement("td");
   boundCell.append(statusBadge(Boolean(account.bound), "已绑定", "未绑定"));
   const tokenCell = document.createElement("td");
-  tokenCell.append(statusBadge(account.tokenValid !== false, "可用", "已失效"));
+  tokenCell.append(statusBadge(account.tokenValid !== false, "授权正常", "授权需处理"));
   const rentalCell = document.createElement("td");
-  rentalCell.append(statusBadge(Boolean(account.rented), "租用中", account.rentable ? "可出租" : "已停用"));
+  const rentalText = account.rented
+    ? (account.rentable ? "租用中" : "租用中·停止新租约")
+    : (account.rentable ? "可接新租约" : "停止新租约");
+  rentalCell.append(statusBadge(Boolean(account.rented), rentalText, rentalText));
   const refreshCell = element("td", "account-refresh", account.lastRefreshTime || "尚未刷新");
   const actionsCell = element("td", "account-actions");
   const deleteButton = actionButton("delete", account.hasRentalHistory ? "保留记录" : "删除", account.id);
@@ -63,6 +66,11 @@ export function renderAccountRow(parent, account, { selected = false } = {}) {
   actionsCell.append(
     actionButton("reveal", "查看", account.id),
     actionButton("mail", "邮件", account.id),
+  );
+  if (account.tokenValid === false) {
+    actionsCell.append(actionButton("recheck-authorization", "重新检测授权", account.id));
+  }
+  actionsCell.append(
     actionButton("toggle-bound", account.bound ? "取消绑定" : "标记绑定", account.id),
     actionButton("toggle-rentable", account.rentable ? "停止出租" : "恢复出租", account.id),
     deleteButton,

@@ -65,7 +65,54 @@ test("pickup login loads mail through account-id-free endpoints", async () => {
   expect(api.post.mock.calls[1]).toEqual([
     "/api/pickup/mail",
     { folder: "inbox", limit: 100 },
+    { timeoutMs: 75000 },
   ]);
   expect(api.post.mock.calls.flat().join(" ")).not.toMatch(/accounts\/\d/);
   expect(document.querySelector("#pickup-email").textContent).toBe("rented@example.test");
+});
+
+
+test("pickup loads a message body only after selecting its summary", async () => {
+  const api = new EventTarget();
+  api.get = vi.fn().mockResolvedValue({ authenticated: false });
+  api.post = vi.fn()
+    .mockResolvedValueOnce({
+      authenticated: true,
+      csrfToken: "csrf",
+      email: "rented@example.test",
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+    })
+    .mockResolvedValueOnce([{
+      id: "message-1",
+      subject: "Subject",
+      sender: "sender@example.test",
+      date: "2026-07-22T11:00:00Z",
+      bodyPreview: "Preview",
+    }])
+    .mockResolvedValueOnce({
+      id: "message-1",
+      subject: "Subject",
+      sender: "sender@example.test",
+      date: "2026-07-22T11:00:00Z",
+      bodyPreview: "Preview",
+      html: "<b>Body</b>",
+    });
+  api.setCsrfToken = vi.fn();
+  api.clearCsrfToken = vi.fn();
+  api.abortAll = vi.fn();
+
+  bootstrapPickup(document, api);
+  document.querySelector("#pickup-code").value = "one-time-code";
+  document.querySelector("#pickup-login-form").dispatchEvent(
+    new Event("submit", { bubbles: true, cancelable: true }),
+  );
+  await vi.waitFor(() => expect(document.querySelector("[data-mail-index]")).not.toBeNull());
+  document.querySelector("[data-mail-index]").click();
+
+  await vi.waitFor(() => expect(api.post).toHaveBeenCalledTimes(3));
+  expect(api.post.mock.calls[2]).toEqual([
+    "/api/pickup/mail/message",
+    { messageId: "message-1" },
+    { timeoutMs: 75000 },
+  ]);
 });

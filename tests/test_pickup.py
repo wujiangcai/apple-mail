@@ -24,13 +24,16 @@ class FakePickupRepository:
         self.deleted = []
         self.events = []
         self.deny = False
+        self.mailbox_unavailable = False
 
     def exchange_code(self, client_key, code_hash, session_hash, csrf_hash, now, limit):
-        from mail_manager.pickup import PickupDenied
+        from mail_manager.pickup import PickupDenied, PickupMailboxUnavailable
 
         self.exchange_calls.append((client_key, code_hash, session_hash, csrf_hash, now, limit))
         if self.deny:
             raise PickupDenied
+        if self.mailbox_unavailable:
+            raise PickupMailboxUnavailable
         context = PickupContext(
             3,
             1,
@@ -141,6 +144,19 @@ def test_pickup_code_failure_is_generic_and_creates_no_cookie():
     assert response.get_json() == {"error": "invalid or expired pickup code"}
     assert client.get_cookie("pickup_session") is None
     assert "wrong" not in response.get_data(as_text=True)
+
+
+def test_pickup_login_reports_unavailable_mailbox_without_creating_cookie():
+    repository = FakePickupRepository()
+    repository.mailbox_unavailable = True
+    client = _app(repository, MutableClock(NOW)).test_client()
+
+    response = client.post("/api/pickup/login", json={"code": "valid-code"})
+
+    assert response.status_code == 409
+    assert response.get_json() == {"error": "mailbox authorization unavailable"}
+    assert client.get_cookie("pickup_session") is None
+    assert repository.sessions == {}
 
 
 def test_pickup_mail_requires_pickup_session_and_exact_csrf():

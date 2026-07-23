@@ -21,6 +21,10 @@ class PickupDenied(Exception):
     pass
 
 
+class PickupMailboxUnavailable(Exception):
+    pass
+
+
 class PostgresPickupRepository:
     def __init__(self, connection: object | Callable[[], object] = db.get_db):
         self._connection_source = connection
@@ -57,7 +61,7 @@ class PostgresPickupRepository:
 
             row = connection.execute(
                 """
-                SELECT r.id, r.account_id, a.email, r.expires_at
+                SELECT r.id, r.account_id, a.email, r.expires_at, a.token_valid
                 FROM mailbox_rentals AS r
                 JOIN accounts AS a ON a.id = r.account_id
                 WHERE r.access_code_hash = %s
@@ -87,6 +91,12 @@ class PostgresPickupRepository:
                     (client_key, count, locked_until, now),
                 )
                 raise PickupDenied
+
+            if not row[4]:
+                connection.execute(
+                    "DELETE FROM pickup_failures WHERE client_key = %s", (client_key,)
+                )
+                raise PickupMailboxUnavailable
 
             connection.execute(
                 "DELETE FROM pickup_failures WHERE client_key = %s", (client_key,)
@@ -255,6 +265,8 @@ def login():
         )
     except PickupDenied:
         return jsonify(error="invalid or expired pickup code"), 401
+    except PickupMailboxUnavailable:
+        return jsonify(error="mailbox authorization unavailable"), 409
     max_age = max(1, math.floor((context.expires_at - _now()).total_seconds()))
     response = jsonify(
         authenticated=True,

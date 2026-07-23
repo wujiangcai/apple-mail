@@ -346,15 +346,19 @@ class FakeGraphClient:
         self.events = []
         self.refresh_error = None
         self.list_error = None
+        self.message_error = None
         self.refresh_hook = None
         self.list_hook = None
+        self.message_hook = None
 
     def spawn(self):
         client = FakeGraphClient(self.messages)
         client.refresh_error = self.refresh_error
         client.list_error = self.list_error
+        client.message_error = self.message_error
         client.refresh_hook = self.refresh_hook
         client.list_hook = self.list_hook
+        client.message_hook = self.message_hook
         return client
 
     def refresh(self, client_id, refresh_token):
@@ -372,6 +376,17 @@ class FakeGraphClient:
         if self.list_error is not None:
             raise self.list_error
         return self.messages[:limit]
+
+    def get_message(self, access_token, message_id):
+        self.events.append(("message", access_token, message_id))
+        if self.message_hook is not None:
+            self.message_hook(access_token, message_id)
+        if self.message_error is not None:
+            raise self.message_error
+        return next(
+            (message for message in self.messages if message.get("id") == message_id),
+            self.messages[0] if self.messages else {},
+        )
 
 
 class FakeMailRepository:
@@ -416,6 +431,34 @@ class FakeMailRepository:
                 refresh_token_ciphertext=account.refresh_token_ciphertext,
             )
 
+    def claim_refresh_for_recheck(self, account_id, lease, now, ttl):
+        from mail_manager.mail import MailAccountNotFound, RefreshBusy
+        from mail_manager.models import RefreshClaim
+
+        with self._guard:
+            account = self.accounts.get(account_id)
+            if account is None:
+                raise MailAccountNotFound
+            if (
+                account.refresh_lease_token is not None
+                and account.refresh_lease_expires_at > now
+            ):
+                retry_after = max(
+                    1,
+                    min(30, int((account.refresh_lease_expires_at - now).total_seconds())),
+                )
+                raise RefreshBusy(retry_after)
+            self.accounts[account_id] = replace(
+                account,
+                refresh_lease_token=lease,
+                refresh_lease_expires_at=now + ttl,
+            )
+            self.events.append(("recheck-claim", account_id, lease))
+            return RefreshClaim(
+                client_id=account.client_id,
+                refresh_token_ciphertext=account.refresh_token_ciphertext,
+            )
+
     def finalize_refresh(self, account_id, lease, ciphertext, now):
         with self._guard:
             if self.finalize_errors:
@@ -446,6 +489,15 @@ class FakeMailRepository:
                 refresh_lease_expires_at=None,
             )
             self.events.append(("invalid", account_id))
+            return True
+
+    def mark_token_invalid(self, account_id, now):
+        with self._guard:
+            account = self.accounts.get(account_id)
+            if account is None:
+                return False
+            self.accounts[account_id] = replace(account, token_valid=False)
+            self.events.append(("mark-invalid", account_id, now))
             return True
 
     def release_refresh(self, account_id, lease):

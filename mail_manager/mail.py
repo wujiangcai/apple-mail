@@ -24,7 +24,9 @@ from flask import (
 from mail_manager import db
 from mail_manager.crypto import CredentialCipher
 from mail_manager.graph import (
+    GraphAuthorizationRejected,
     GraphClient,
+    GraphPermissionDenied,
     InvalidGrant,
     UpstreamProtocolError,
     UpstreamRateLimited,
@@ -42,6 +44,7 @@ MAX_ACCOUNT_ID = (1 << 63) - 1
 MAX_BATCH_SIZE = 20
 MAX_MAIL_RESULTS = 100
 MAX_KEYWORD_LENGTH = 128
+MAX_MESSAGE_ID_LENGTH = 1024
 RANDOM_CANDIDATE_LIMIT = 5
 BOUND_MESSAGE_LIMIT = 100
 RANDOM_BOUND_MESSAGE_LIMIT = 20
@@ -110,6 +113,10 @@ class MailRepository(Protocol):
         self, account_id: int, lease: str, now: datetime, ttl: timedelta
     ) -> RefreshClaim: ...
 
+    def claim_refresh_for_recheck(
+        self, account_id: int, lease: str, now: datetime, ttl: timedelta
+    ) -> RefreshClaim: ...
+
     def finalize_refresh(
         self, account_id: int, lease: str, ciphertext: str, now: datetime
     ) -> bool: ...
@@ -117,6 +124,8 @@ class MailRepository(Protocol):
     def invalidate_refresh(
         self, account_id: int, lease: str, now: datetime
     ) -> bool: ...
+
+    def mark_token_invalid(self, account_id: int, now: datetime) -> bool: ...
 
     def release_refresh(self, account_id: int, lease: str) -> bool: ...
 
@@ -206,6 +215,52 @@ class PostgresMailRepository:
             retry_after = max(1, min(30, math.ceil(seconds)))
         raise RefreshBusy(retry_after)
 
+    def claim_refresh_for_recheck(
+        self,
+        account_id: int,
+        lease: str,
+        now: datetime,
+        ttl: timedelta = REFRESH_LEASE_TTL,
+    ) -> RefreshClaim:
+        _validate_account_id(account_id)
+        if not isinstance(lease, str) or not lease:
+            raise ValueError("lease must be a non-empty string")
+        now = _as_utc(now)
+        expires_at = now + ttl
+        try:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    """
+                    UPDATE accounts
+                    SET refresh_lease_token = %s,
+                        refresh_lease_expires_at = %s
+                    WHERE id = %s
+                      AND (
+                          refresh_lease_token IS NULL
+                          OR refresh_lease_expires_at <= %s
+                      )
+                    RETURNING client_id, refresh_token_ciphertext
+                    """,
+                    (lease, expires_at, account_id, now),
+                ).fetchone()
+                if row is not None:
+                    return RefreshClaim(
+                        client_id=row[0], refresh_token_ciphertext=row[1]
+                    )
+                state = connection.execute(
+                    "SELECT refresh_lease_expires_at FROM accounts WHERE id = %s",
+                    (account_id,),
+                ).fetchone()
+        except psycopg.Error:
+            raise RefreshPersistenceError("refresh claim failed") from None
+        if state is None:
+            raise MailAccountNotFound
+        retry_after = 1
+        if isinstance(state[0], datetime):
+            seconds = (_as_utc(state[0]) - now).total_seconds()
+            retry_after = max(1, min(30, math.ceil(seconds)))
+        raise RefreshBusy(retry_after)
+
     def finalize_refresh(
         self,
         account_id: int,
@@ -256,6 +311,24 @@ class PostgresMailRepository:
                 ).fetchone()
         except psycopg.Error:
             raise RefreshPersistenceError("refresh invalidation failed") from None
+        return row is not None
+
+    def mark_token_invalid(self, account_id: int, now: datetime) -> bool:
+        _validate_account_id(account_id)
+        now = _as_utc(now)
+        try:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    """
+                    UPDATE accounts
+                    SET token_valid = FALSE, updated_at = %s
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (now, account_id),
+                ).fetchone()
+        except psycopg.Error:
+            raise RefreshPersistenceError("token invalidation failed") from None
         return row is not None
 
     def release_refresh(self, account_id: int, lease: str) -> bool:
@@ -414,10 +487,21 @@ class TokenCoordinator:
         self._lease_factory = lease_factory
 
     def access_token(self, account_id: int) -> str:
+        return self._refresh(account_id, allow_invalid=False)
+
+    def recheck_authorization(self, account_id: int) -> str:
+        return self._refresh(account_id, allow_invalid=True)
+
+    def _refresh(self, account_id: int, *, allow_invalid: bool) -> str:
         _validate_account_id(account_id)
         lease = self._lease_factory()
+        claim_method = (
+            self._repository.claim_refresh_for_recheck
+            if allow_invalid
+            else self._repository.claim_refresh
+        )
         try:
-            claim = self._repository.claim_refresh(
+            claim = claim_method(
                 account_id, lease, _as_utc(self._clock()), REFRESH_LEASE_TTL
             )
         except RefreshPersistenceError:
@@ -582,7 +666,31 @@ class MailService:
         access_token = self._coordinator.access_token(account_id)
         graph = self._graph_client_factory()
         raw_messages = graph.list_messages(access_token, folder, limit)
-        return [_serialize_message(_normalize_message(item)) for item in raw_messages]
+        return [_serialize_summary(_normalize_summary(item)) for item in raw_messages]
+
+    def get_message(self, account_id: int, message_id: str):
+        _validate_account_id(account_id)
+        message_id = _validate_message_id(message_id)
+        access_token = self._coordinator.access_token(account_id)
+        graph = self._graph_client_factory()
+        return _serialize_message(_normalize_message(graph.get_message(access_token, message_id)))
+
+    def recheck_authorization(self, account_id: int):
+        access_token = self._coordinator.recheck_authorization(account_id)
+        graph = self._graph_client_factory()
+        try:
+            graph.list_messages(access_token, "inbox", 1)
+        except (GraphAuthorizationRejected, GraphPermissionDenied):
+            try:
+                self._repository.mark_token_invalid(
+                    account_id, _as_utc(self._clock())
+                )
+            except RefreshPersistenceError:
+                raise UpstreamUnavailable(
+                    "refresh storage is unavailable"
+                ) from None
+            raise
+        return {"tokenValid": True, "mailAccess": "available"}
 
     def verify_code(
         self,
@@ -676,6 +784,16 @@ def _validate_result_limit(limit: int) -> None:
         raise InvalidMailPayload
 
 
+def _validate_message_id(message_id: object) -> str:
+    if (
+        not isinstance(message_id, str)
+        or not message_id.strip()
+        or len(message_id) > MAX_MESSAGE_ID_LENGTH
+    ):
+        raise InvalidMailPayload
+    return message_id.strip()
+
+
 def _validate_ids(value: object) -> list[int]:
     if not isinstance(value, list) or not value or len(value) > MAX_BATCH_SIZE:
         raise InvalidMailPayload
@@ -719,9 +837,21 @@ def _sender_address(raw_message: Mapping) -> str:
     return address
 
 
-def _normalize_message(raw_message: object) -> MailView:
+def _normalize_summary(raw_message: object) -> MailView:
     if not isinstance(raw_message, Mapping):
         raise UpstreamProtocolError("Microsoft Graph returned an invalid message")
+    return MailView(
+        id=_string_field(raw_message, "id"),
+        subject=_string_field(raw_message, "subject"),
+        sender=_sender_address(raw_message),
+        date=_string_field(raw_message, "receivedDateTime"),
+        body_preview=_string_field(raw_message, "bodyPreview"),
+        html="",
+    )
+
+
+def _normalize_message(raw_message: object) -> MailView:
+    summary = _normalize_summary(raw_message)
     body = raw_message.get("body")
     if not isinstance(body, Mapping):
         raise UpstreamProtocolError("Microsoft Graph returned an invalid message body")
@@ -734,24 +864,27 @@ def _normalize_message(raw_message: object) -> MailView:
     ):
         raise UpstreamProtocolError("Microsoft Graph returned an invalid message body")
     return MailView(
-        id=_string_field(raw_message, "id"),
-        subject=_string_field(raw_message, "subject"),
-        sender=_sender_address(raw_message),
-        date=_string_field(raw_message, "receivedDateTime"),
-        body_preview=_string_field(raw_message, "bodyPreview"),
+        id=summary.id,
+        subject=summary.subject,
+        sender=summary.sender,
+        date=summary.date,
+        body_preview=summary.body_preview,
         html=content,
     )
 
 
-def _serialize_message(message: MailView) -> dict[str, str]:
+def _serialize_summary(message: MailView) -> dict[str, str]:
     return {
         "id": message.id,
         "subject": message.subject,
         "sender": message.sender,
         "date": message.date,
         "bodyPreview": message.body_preview,
-        "html": message.html,
     }
+
+
+def _serialize_message(message: MailView) -> dict[str, str]:
+    return {**_serialize_summary(message), "html": message.html}
 
 
 def _extract_contextual_code(text: str) -> str | None:
@@ -798,6 +931,10 @@ def _error_response(error):
         response.status_code = 409
         response.headers["Retry-After"] = str(error.retry_after)
         return response
+    if isinstance(error, GraphAuthorizationRejected):
+        return jsonify(error="mail access authorization rejected"), 409
+    if isinstance(error, GraphPermissionDenied):
+        return jsonify(error="mail access permission denied"), 409
     if isinstance(error, UpstreamRateLimited):
         response = jsonify(error="upstream rate limited")
         response.status_code = 429
@@ -818,6 +955,8 @@ _EXPECTED_ERRORS = (
     VerificationCodeNotFound,
     NoUnboundAccount,
     InvalidGrant,
+    GraphAuthorizationRejected,
+    GraphPermissionDenied,
     UpstreamRateLimited,
     UpstreamUnavailable,
     UpstreamProtocolError,
@@ -838,6 +977,36 @@ def list_mail(account_id: int):
     except _EXPECTED_ERRORS as error:
         return _error_response(error)
     return jsonify(messages)
+
+
+@blueprint.post("/api/accounts/<int:account_id>/mail/message")
+def get_message(account_id: int):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"messageId"}:
+        return _invalid_response()
+    try:
+        message = _service().get_message(account_id, payload["messageId"])
+    except InvalidMailPayload:
+        return _invalid_response()
+    except _EXPECTED_ERRORS as error:
+        return _error_response(error)
+    return jsonify(message)
+
+
+@blueprint.post("/api/accounts/<int:account_id>/recheck-authorization")
+def recheck_authorization(account_id: int):
+    payload = request.get_json(silent=True)
+    if payload not in (None, {}) or (
+        payload is None and request.content_length not in (None, 0)
+    ):
+        return _invalid_response()
+    try:
+        result = _service().recheck_authorization(account_id)
+    except InvalidMailPayload:
+        return _invalid_response()
+    except _EXPECTED_ERRORS as error:
+        return _error_response(error)
+    return jsonify(result)
 
 
 @blueprint.post("/api/accounts/<int:account_id>/verify-code")
@@ -880,6 +1049,26 @@ def pickup_list_mail():
         return _error_response(error)
     record_pickup_event("mail_viewed", payload["folder"])
     return jsonify(messages)
+
+
+@blueprint.post("/api/pickup/mail/message")
+def pickup_get_message():
+    from mail_manager.pickup import current_pickup_context, record_pickup_event
+
+    context = current_pickup_context()
+    if context is None:
+        return jsonify(error="pickup authorization required"), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"messageId"}:
+        return _invalid_response()
+    try:
+        message = _service().get_message(context.account_id, payload["messageId"])
+    except InvalidMailPayload:
+        return _invalid_response()
+    except _EXPECTED_ERRORS as error:
+        return _error_response(error)
+    record_pickup_event("mail_viewed", "message")
+    return jsonify(message)
 
 
 @blueprint.post("/api/pickup/verify-code")

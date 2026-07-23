@@ -86,7 +86,7 @@ test("mailbox controls use the exact account-id API contracts", async () => {
     expect(api.post).toHaveBeenCalledWith("/api/accounts/7/mail", {
       folder: "inbox",
       limit: 100,
-    });
+    }, { timeoutMs: 75000 });
   });
 
   document.querySelector('[data-folder="junkemail"]').click();
@@ -94,7 +94,7 @@ test("mailbox controls use the exact account-id API contracts", async () => {
     expect(api.post).toHaveBeenCalledWith("/api/accounts/7/mail", {
       folder: "junkemail",
       limit: 100,
-    });
+    }, { timeoutMs: 75000 });
   });
 
   document.querySelector("#mail-keyword").value = "OpenAI";
@@ -103,7 +103,7 @@ test("mailbox controls use the exact account-id API contracts", async () => {
     expect(api.post).toHaveBeenCalledWith("/api/accounts/7/verify-code", {
       keyword: "OpenAI",
       maxResults: 100,
-    });
+    }, { timeoutMs: 75000 });
   });
 });
 
@@ -248,7 +248,7 @@ test("closing the mail dialog invalidates a deferred verification code", async (
     expect(api.post).toHaveBeenCalledWith("/api/accounts/7/mail", {
       folder: "inbox",
       limit: 100,
-    });
+    }, { timeoutMs: 75000 });
   });
   let resolveCode;
   api.post.mockImplementation((path) => {

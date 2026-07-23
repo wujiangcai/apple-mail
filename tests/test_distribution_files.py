@@ -151,7 +151,7 @@ def test_caddy_terminates_tls_limits_requests_and_sets_security_headers():
     transport = _only_block(proxy, "transport http")
     assert transport["lines"] == [
         "dial_timeout 5s",
-        "response_header_timeout 30s",
+        "response_header_timeout 70s",
     ]
 
     headers = _only_block(site, "header")["lines"]

@@ -10,7 +10,7 @@ Group=mail-manager
 WorkingDirectory=/opt/mail-manager
 EnvironmentFile=/etc/mail-manager/mail-manager.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/mail-manager/.venv/bin/gunicorn --workers 4 --worker-class sync --timeout 30 --graceful-timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 100 --bind 127.0.0.1:5000 "mail_manager:create_app()"
+ExecStart=/opt/mail-manager/.venv/bin/gunicorn --workers 4 --worker-class sync --timeout 65 --graceful-timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 100 --bind 127.0.0.1:5000 "mail_manager:create_app()"
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=60s

@@ -1,5 +1,5 @@
 from importlib import import_module
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 import json
 import traceback
 
@@ -415,7 +415,7 @@ def test_list_messages_uses_bounded_query_and_preserves_graph_dictionaries(
         "$top": ["30"],
         "$orderby": ["receivedDateTime desc"],
         "$select": [
-            "id,subject,from,receivedDateTime,body,bodyPreview",
+            "id,subject,from,receivedDateTime,bodyPreview",
         ],
     }
 
@@ -463,6 +463,61 @@ def test_list_messages_accepts_explicit_https_port_443_next_link(requests_mock):
         {"id": "first"},
         {"id": "second"},
     ]
+
+
+def test_get_message_encodes_id_and_requests_full_body(requests_mock):
+    message_id = "AAMk+/= id"
+    message = {
+        "id": message_id,
+        "subject": "Subject",
+        "from": {"emailAddress": {"address": "sender@example.test"}},
+        "receivedDateTime": "2026-07-13T00:00:00Z",
+        "body": {"contentType": "html", "content": "<p>Body</p>"},
+        "bodyPreview": "Body",
+    }
+    requests_mock.get(
+        f"{graph.GRAPH_BASE}/me/messages/{quote(message_id, safe='')}",
+        json=message,
+    )
+
+    assert graph.GraphClient().get_message("access-secret", message_id) == message
+    request = requests_mock.last_request
+    assert parse_qs(urlsplit(request.url).query) == {
+        "$select": ["id,subject,from,receivedDateTime,body,bodyPreview"]
+    }
+
+
+@pytest.mark.parametrize("message_id", [None, "", 42, "x" * 1025])
+def test_get_message_rejects_invalid_ids_without_network(requests_mock, message_id):
+    with pytest.raises(ValueError):
+        graph.GraphClient().get_message("access-secret", message_id)
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_error"),
+    [
+        (401, graph.GraphAuthorizationRejected),
+        (403, graph.GraphPermissionDenied),
+    ],
+)
+def test_graph_mail_authorization_errors_are_classified_and_sanitized(
+    requests_mock, status_code, expected_error
+):
+    requests_mock.get(
+        f"{graph.GRAPH_BASE}/me/mailFolders/inbox/messages",
+        status_code=status_code,
+        text="response-secret",
+    )
+
+    access_secret = "access-" + "secret"
+    with pytest.raises(expected_error) as captured:
+        graph.GraphClient().list_messages(access_secret, "inbox", 10)
+
+    assert access_secret not in str(captured.value)
+    assert access_secret not in repr(captured.value)
+    assert "response-secret" not in str(captured.value)
+    assert "response-secret" not in repr(captured.value)
 
 
 @pytest.mark.parametrize("folder", [None, "", "Inbox", "sentitems", 42])

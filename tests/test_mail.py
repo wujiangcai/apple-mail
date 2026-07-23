@@ -233,6 +233,62 @@ def test_service_persists_rotation_before_list_and_keeps_it_if_list_fails():
     assert repository.accounts[1].refresh_token_ciphertext == "opaque-ciphertext-1"
 
 
+def test_manual_recheck_can_restore_an_invalid_account_and_probe_mail():
+    repository = FakeMailRepository([_stored(token_valid=False)])
+    graph_client = FakeGraphClient([])
+    service = MailService(
+        repository,
+        TokenCoordinator(
+            repository,
+            lambda: graph_client,
+            _cipher(1),
+            lambda: NOW,
+            lease_factory=lambda: "recheck-lease",
+        ),
+        lambda: graph_client,
+        lambda: NOW,
+    )
+
+    result = service.recheck_authorization(1)
+
+    assert result == {"tokenValid": True, "mailAccess": "available"}
+    assert repository.accounts[1].token_valid is True
+    assert repository.events[0] == ("recheck-claim", 1, "recheck-lease")
+    assert graph_client.events[-1][0] == "list"
+
+
+def test_manual_recheck_keeps_invalid_grant_sticky():
+    repository = FakeMailRepository([_stored(token_valid=False)])
+    graph_client = FakeGraphClient()
+    graph_client.refresh_error = graph.InvalidGrant("sanitized")
+    coordinator = TokenCoordinator(
+        repository, lambda: graph_client, _cipher(1), lambda: NOW
+    )
+
+    with pytest.raises(graph.InvalidGrant):
+        coordinator.recheck_authorization(1)
+
+    assert repository.accounts[1].token_valid is False
+
+
+def test_manual_recheck_keeps_mail_authorization_failures_invalid():
+    repository = FakeMailRepository([_stored(token_valid=False)])
+    graph_client = FakeGraphClient()
+    graph_client.list_error = graph.GraphPermissionDenied("sanitized")
+    service = MailService(
+        repository,
+        TokenCoordinator(repository, lambda: graph_client, _cipher(1), lambda: NOW),
+        lambda: graph_client,
+        lambda: NOW,
+    )
+
+    with pytest.raises(graph.GraphPermissionDenied):
+        service.recheck_authorization(1)
+
+    assert repository.accounts[1].token_valid is False
+    assert repository.accounts[1].refresh_token_ciphertext == "opaque-ciphertext-1"
+
+
 def test_same_account_is_immediately_busy_while_different_accounts_run_in_parallel():
     accounts = [_stored(1), _stored(2)]
     repository = FakeMailRepository(accounts)
@@ -302,12 +358,12 @@ def test_mail_mapping_validates_body_and_returns_only_public_fields():
             "sender": "sender@example.test",
             "date": "2026-07-13T07:00:00Z",
             "bodyPreview": "Use code 123456",
-            "html": "<b>123456</b>",
         }
     ]
+    assert service.get_message(1, "message-1")["html"] == "<b>123456</b>"
     graph_client.messages[0]["body"]["content"] = 123456
     with pytest.raises(graph.UpstreamProtocolError):
-        service.list_mail(1, "inbox", 10)
+        service.get_message(1, "message-1")
 
 
 @pytest.mark.parametrize(
@@ -470,6 +526,8 @@ def test_random_unbound_uses_five_safe_candidates_and_returns_metadata_only():
     ("error", "status", "retry_after"),
     [
         (graph.InvalidGrant("refresh-secret"), 409, None),
+        (graph.GraphAuthorizationRejected("access-secret"), 409, None),
+        (graph.GraphPermissionDenied("access-secret"), 409, None),
         (graph.UpstreamProtocolError("access-secret"), 502, None),
         (graph.UpstreamUnavailable("access-secret"), 503, None),
         (graph.UpstreamRateLimited(19), 429, "19"),
@@ -494,6 +552,40 @@ def test_mail_api_maps_sanitized_upstream_failures(error, status, retry_after):
     assert response.headers.get("Retry-After") == retry_after
 
 
+def test_mail_api_supports_lazy_message_body_loading():
+    repository = FakeMailRepository([_stored()])
+    graph_client = FakeGraphClient(
+        [
+            {
+                "id": "message-1",
+                "subject": "Subject",
+                "from": {"emailAddress": {"address": "sender@example.test"}},
+                "receivedDateTime": "2026-07-13T07:00:00Z",
+                "bodyPreview": "Preview",
+                "body": {"contentType": "html", "content": "<b>Body</b>"},
+            }
+        ]
+    )
+    client = _app(repository, _cipher(1), graph_client).test_client()
+    headers = _login_headers(client)
+
+    summary = client.post(
+        "/api/accounts/1/mail",
+        json={"folder": "inbox", "limit": 10},
+        headers=headers,
+    )
+    detail = client.post(
+        "/api/accounts/1/mail/message",
+        json={"messageId": "message-1"},
+        headers=headers,
+    )
+
+    assert summary.status_code == 200
+    assert "html" not in summary.get_json()[0]
+    assert detail.status_code == 200
+    assert detail.get_json()["html"] == "<b>Body</b>"
+
+
 def test_mail_api_accepts_ids_only_and_validates_all_payload_bounds():
     repository = FakeMailRepository([_stored()])
     client = _app(repository, _cipher(1), FakeGraphClient()).test_client()
@@ -503,6 +595,8 @@ def test_mail_api_accepts_ids_only_and_validates_all_payload_bounds():
         ("/api/accounts/1/mail", {"folder": "inbox", "limit": 0}),
         ("/api/accounts/1/mail", {"folder": "sent", "limit": 10}),
         ("/api/accounts/1/mail", {"folder": "inbox", "limit": 10, "token": "x"}),
+        ("/api/accounts/1/mail/message", {"messageId": ""}),
+        ("/api/accounts/1/mail/message", {"messageId": "x", "accountId": 2}),
         ("/api/accounts/1/verify-code", {"keyword": "x" * 129, "maxResults": 10}),
         ("/api/accounts/check-bound", {"ids": [1, 1]}),
         ("/api/accounts/check-bound", {"ids": list(range(1, 22))}),
@@ -551,7 +645,6 @@ def test_mail_api_endpoints_return_public_shapes_and_preserve_batch_order():
         "sender",
         "date",
         "bodyPreview",
-        "html",
     }
     assert code_response.get_json() == {"code": "ABC123"}
     assert [item["id"] for item in batch_response.get_json()] == [2, 1]

@@ -17,7 +17,7 @@
 	reverse_proxy 127.0.0.1:5000 {
 		transport http {
 			dial_timeout 5s
-			response_header_timeout 30s
+			response_header_timeout 70s
 		}
 	}
 }

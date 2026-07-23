@@ -14,7 +14,9 @@ OAUTH_SCOPE = "offline_access openid profile Mail.Read"
 MAX_RETRY_AFTER_SECONDS = 3600
 TOKEN_RESPONSE_MAX_BYTES = 64 * 1024
 GRAPH_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
+GRAPH_MESSAGE_MAX_BYTES = 4 * 1024 * 1024
 GRAPH_TOTAL_MAX_BYTES = 8 * 1024 * 1024
+MAX_MESSAGE_ID_LENGTH = 1024
 REQUEST_TIMEOUT = (5, 15)
 RESPONSE_CHUNK_SIZE = 64 * 1024
 
@@ -38,6 +40,14 @@ class UpstreamUnavailable(GraphClientError):
 
 
 class UpstreamProtocolError(GraphClientError):
+    pass
+
+
+class GraphAuthorizationRejected(GraphClientError):
+    pass
+
+
+class GraphPermissionDenied(GraphClientError):
     pass
 
 
@@ -127,7 +137,16 @@ def _raise_for_upstream_status(response, *, oauth):
     if 400 <= response.status_code < 500:
         if oauth and response.status_code == 400:
             return
+        status_code = response.status_code
         _close_response(response)
+        if not oauth and status_code == 401:
+            raise GraphAuthorizationRejected(
+                "Microsoft Graph rejected mail authorization"
+            ) from None
+        if not oauth and status_code == 403:
+            raise GraphPermissionDenied(
+                "Microsoft Graph denied mail permission"
+            ) from None
         raise UpstreamProtocolError("Microsoft Graph rejected the request") from None
     if not 200 <= response.status_code < 300:
         _close_response(response)
@@ -199,7 +218,7 @@ class GraphClient:
         params = {
             "$top": min(50, limit),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,from,receivedDateTime,body,bodyPreview",
+            "$select": "id,subject,from,receivedDateTime,bodyPreview",
         }
         messages = []
         remaining_total_bytes = GRAPH_TOTAL_MAX_BYTES
@@ -255,6 +274,31 @@ class GraphClient:
             url = trusted_next_link
             params = None
         return messages
+
+    def get_message(self, access_token, message_id):
+        access_token = self._require_secret(access_token, "access_token")
+        message_id = self._require_secret(message_id, "message_id")
+        if len(message_id) > MAX_MESSAGE_ID_LENGTH:
+            raise ValueError("message_id is too long")
+        encoded_id = quote(message_id, safe="")
+        url = f"{GRAPH_BASE}/me/messages/{encoded_id}"
+        try:
+            response = self.session.get(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "$select": "id,subject,from,receivedDateTime,body,bodyPreview"
+                },
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+                stream=True,
+            )
+        except requests.RequestException:
+            raise UpstreamUnavailable("Microsoft Graph is unavailable") from None
+        payload, _ = _response_json(
+            response, GRAPH_MESSAGE_MAX_BYTES, oauth=False
+        )
+        return payload
 
     @staticmethod
     def _require_secret(value, field_name):

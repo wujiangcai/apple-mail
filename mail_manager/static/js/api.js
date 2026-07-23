@@ -89,9 +89,13 @@ export class ApiClient extends EventTarget {
   async request(
     method,
     path,
-    { body, responseType = "json", signal, notifyUnauthorized = true } = {},
+    { body, responseType = "json", signal, notifyUnauthorized = true, timeoutMs } = {},
   ) {
     assertApiPath(path);
+    const requestTimeoutMs = timeoutMs ?? this.timeoutMs;
+    if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+      throw new TypeError("timeoutMs must be a positive number");
+    }
     const normalizedMethod = method.toUpperCase();
     const controller = new AbortController();
     this.controllers.add(controller);
@@ -107,7 +111,7 @@ export class ApiClient extends EventTarget {
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, this.timeoutMs);
+    }, requestTimeoutMs);
     const headers = { Accept: responseType === "json" ? "application/json" : "*/*" };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
