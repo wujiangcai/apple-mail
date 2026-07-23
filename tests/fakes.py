@@ -377,10 +377,10 @@ class FakeGraphClient:
             raise self.list_error
         return self.messages[:limit]
 
-    def get_message(self, access_token, message_id):
-        self.events.append(("message", access_token, message_id))
+    def get_message(self, access_token, folder, message_id):
+        self.events.append(("message", access_token, folder, message_id))
         if self.message_hook is not None:
-            self.message_hook(access_token, message_id)
+            self.message_hook(access_token, folder, message_id)
         if self.message_error is not None:
             raise self.message_error
         return next(
@@ -489,6 +489,34 @@ class FakeMailRepository:
                 refresh_lease_expires_at=None,
             )
             self.events.append(("invalid", account_id))
+            return True
+
+    def finalize_recheck(self, account_id, lease, ciphertext, now):
+        with self._guard:
+            account = self.accounts.get(account_id)
+            if account is None or account.refresh_lease_token != lease:
+                return False
+            self.accounts[account_id] = replace(
+                account,
+                refresh_token_ciphertext=ciphertext,
+                last_refresh_time=now,
+                refresh_lease_expires_at=now + timedelta(seconds=30),
+            )
+            self.events.append(("persist-recheck", account_id, ciphertext))
+            return True
+
+    def validate_recheck(self, account_id, lease, now):
+        with self._guard:
+            account = self.accounts.get(account_id)
+            if account is None or account.refresh_lease_token != lease:
+                return False
+            self.accounts[account_id] = replace(
+                account,
+                token_valid=True,
+                refresh_lease_token=None,
+                refresh_lease_expires_at=None,
+            )
+            self.events.append(("validate-recheck", account_id, now))
             return True
 
     def mark_token_invalid(self, account_id, now):

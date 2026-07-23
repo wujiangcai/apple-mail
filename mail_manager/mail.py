@@ -121,6 +121,14 @@ class MailRepository(Protocol):
         self, account_id: int, lease: str, ciphertext: str, now: datetime
     ) -> bool: ...
 
+    def finalize_recheck(
+        self, account_id: int, lease: str, ciphertext: str, now: datetime
+    ) -> bool: ...
+
+    def validate_recheck(
+        self, account_id: int, lease: str, now: datetime
+    ) -> bool: ...
+
     def invalidate_refresh(
         self, account_id: int, lease: str, now: datetime
     ) -> bool: ...
@@ -285,6 +293,61 @@ class PostgresMailRepository:
                     RETURNING id
                     """,
                     (ciphertext, now, now, account_id, lease),
+                ).fetchone()
+        except psycopg.Error:
+            raise RefreshPersistenceError("refresh finalization failed") from None
+        return row is not None
+
+    def finalize_recheck(
+        self,
+        account_id: int,
+        lease: str,
+        ciphertext: str,
+        now: datetime,
+    ) -> bool:
+        _validate_account_id(account_id)
+        now = _as_utc(now)
+        try:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    """
+                    UPDATE accounts
+                    SET refresh_token_ciphertext = %s,
+                        last_refresh_time = %s,
+                        updated_at = %s,
+                        refresh_lease_expires_at = %s
+                    WHERE id = %s AND refresh_lease_token = %s
+                    RETURNING id
+                    """,
+                    (
+                        ciphertext,
+                        now,
+                        now,
+                        now + REFRESH_LEASE_TTL,
+                        account_id,
+                        lease,
+                    ),
+                ).fetchone()
+        except psycopg.Error:
+            raise RefreshPersistenceError("refresh finalization failed") from None
+        return row is not None
+
+    def validate_recheck(self, account_id: int, lease: str, now: datetime) -> bool:
+        _validate_account_id(account_id)
+        now = _as_utc(now)
+        try:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    """
+                    UPDATE accounts
+                    SET token_valid = TRUE,
+                        updated_at = %s,
+                        refresh_lease_token = NULL,
+                        refresh_lease_expires_at = NULL
+                    WHERE id = %s AND refresh_lease_token = %s
+                    RETURNING id
+                    """,
+                    (now, account_id, lease),
                 ).fetchone()
         except psycopg.Error:
             raise RefreshPersistenceError("refresh finalization failed") from None
@@ -489,7 +552,7 @@ class TokenCoordinator:
     def access_token(self, account_id: int) -> str:
         return self._refresh(account_id, allow_invalid=False)
 
-    def recheck_authorization(self, account_id: int) -> str:
+    def recheck_authorization(self, account_id: int) -> tuple[str, str]:
         return self._refresh(account_id, allow_invalid=True)
 
     def _refresh(self, account_id: int, *, allow_invalid: bool) -> str:
@@ -528,11 +591,20 @@ class TokenCoordinator:
 
         for attempt in range(FINALIZE_ATTEMPTS):
             try:
-                finalized = self._repository.finalize_refresh(
-                    account_id,
-                    lease,
-                    new_ciphertext,
-                    _as_utc(self._clock()),
+                finalized = (
+                    self._repository.finalize_recheck(
+                        account_id,
+                        lease,
+                        new_ciphertext,
+                        _as_utc(self._clock()),
+                    )
+                    if allow_invalid
+                    else self._repository.finalize_refresh(
+                        account_id,
+                        lease,
+                        new_ciphertext,
+                        _as_utc(self._clock()),
+                    )
                 )
             except RefreshPersistenceError:
                 if attempt == FINALIZE_ATTEMPTS - 1:
@@ -543,7 +615,7 @@ class TokenCoordinator:
                 continue
             if not finalized:
                 raise RefreshBusy(1)
-            return access_token
+            return (access_token, lease) if allow_invalid else access_token
         raise RuntimeError("unreachable refresh finalization state")
 
     def _release_best_effort(self, account_id: int, lease: str) -> None:
@@ -665,31 +737,56 @@ class MailService:
         _validate_result_limit(limit)
         access_token = self._coordinator.access_token(account_id)
         graph = self._graph_client_factory()
-        raw_messages = graph.list_messages(access_token, folder, limit)
+        try:
+            raw_messages = graph.list_messages(access_token, folder, limit)
+        except (GraphAuthorizationRejected, GraphPermissionDenied):
+            self._mark_mail_authorization_invalid(account_id)
+            raise
         return [_serialize_summary(_normalize_summary(item)) for item in raw_messages]
 
-    def get_message(self, account_id: int, message_id: str):
+    def get_message(self, account_id: int, folder: str, message_id: str):
         _validate_account_id(account_id)
+        if folder not in _FOLDERS:
+            raise InvalidMailPayload
         message_id = _validate_message_id(message_id)
         access_token = self._coordinator.access_token(account_id)
         graph = self._graph_client_factory()
-        return _serialize_message(_normalize_message(graph.get_message(access_token, message_id)))
+        try:
+            raw_message = graph.get_message(access_token, folder, message_id)
+        except (GraphAuthorizationRejected, GraphPermissionDenied):
+            self._mark_mail_authorization_invalid(account_id)
+            raise
+        return _serialize_message(_normalize_message(raw_message))
+
+    def _mark_mail_authorization_invalid(self, account_id: int) -> None:
+        try:
+            marked = self._repository.mark_token_invalid(
+                account_id, _as_utc(self._clock())
+            )
+        except RefreshPersistenceError:
+            raise UpstreamUnavailable("refresh storage is unavailable") from None
+        if not marked:
+            raise MailAccountNotFound
 
     def recheck_authorization(self, account_id: int):
-        access_token = self._coordinator.recheck_authorization(account_id)
+        access_token, lease = self._coordinator.recheck_authorization(account_id)
         graph = self._graph_client_factory()
         try:
             graph.list_messages(access_token, "inbox", 1)
-        except (GraphAuthorizationRejected, GraphPermissionDenied):
+        except BaseException:
             try:
-                self._repository.mark_token_invalid(
-                    account_id, _as_utc(self._clock())
-                )
-            except RefreshPersistenceError:
-                raise UpstreamUnavailable(
-                    "refresh storage is unavailable"
-                ) from None
+                self._repository.release_refresh(account_id, lease)
+            except BaseException:
+                pass
             raise
+        try:
+            valid = self._repository.validate_recheck(
+                account_id, lease, _as_utc(self._clock())
+            )
+        except RefreshPersistenceError:
+            raise UpstreamUnavailable("refresh storage is unavailable") from None
+        if not valid:
+            raise RefreshBusy(1)
         return {"tokenValid": True, "mailAccess": "available"}
 
     def verify_code(
@@ -982,10 +1079,12 @@ def list_mail(account_id: int):
 @blueprint.post("/api/accounts/<int:account_id>/mail/message")
 def get_message(account_id: int):
     payload = request.get_json(silent=True)
-    if not isinstance(payload, dict) or set(payload) != {"messageId"}:
+    if not isinstance(payload, dict) or set(payload) != {"folder", "messageId"}:
         return _invalid_response()
     try:
-        message = _service().get_message(account_id, payload["messageId"])
+        message = _service().get_message(
+            account_id, payload["folder"], payload["messageId"]
+        )
     except InvalidMailPayload:
         return _invalid_response()
     except _EXPECTED_ERRORS as error:
@@ -1059,10 +1158,12 @@ def pickup_get_message():
     if context is None:
         return jsonify(error="pickup authorization required"), 401
     payload = request.get_json(silent=True)
-    if not isinstance(payload, dict) or set(payload) != {"messageId"}:
+    if not isinstance(payload, dict) or set(payload) != {"folder", "messageId"}:
         return _invalid_response()
     try:
-        message = _service().get_message(context.account_id, payload["messageId"])
+        message = _service().get_message(
+            context.account_id, payload["folder"], payload["messageId"]
+        )
     except InvalidMailPayload:
         return _invalid_response()
     except _EXPECTED_ERRORS as error:

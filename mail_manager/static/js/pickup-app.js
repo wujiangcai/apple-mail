@@ -136,7 +136,7 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
     renderMailDetail(detail, null);
     const loaded = await api.post(
       "/api/pickup/mail/message",
-      { messageId: message.id },
+      { folder: requestedFolder, messageId: message.id },
       { timeoutMs: MAIL_TIMEOUT_MS },
     );
     if (requestVersion !== detailRequestVersion

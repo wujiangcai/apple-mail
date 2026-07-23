@@ -112,7 +112,7 @@ test("pickup loads a message body only after selecting its summary", async () =>
   await vi.waitFor(() => expect(api.post).toHaveBeenCalledTimes(3));
   expect(api.post.mock.calls[2]).toEqual([
     "/api/pickup/mail/message",
-    { messageId: "message-1" },
+    { folder: "inbox", messageId: "message-1" },
     { timeoutMs: 75000 },
   ]);
 });

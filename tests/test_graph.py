@@ -476,11 +476,11 @@ def test_get_message_encodes_id_and_requests_full_body(requests_mock):
         "bodyPreview": "Body",
     }
     requests_mock.get(
-        f"{graph.GRAPH_BASE}/me/messages/{quote(message_id, safe='')}",
+        f"{graph.GRAPH_BASE}/me/mailFolders/inbox/messages/{quote(message_id, safe='')}",
         json=message,
     )
 
-    assert graph.GraphClient().get_message("access-secret", message_id) == message
+    assert graph.GraphClient().get_message("access-secret", "inbox", message_id) == message
     request = requests_mock.last_request
     assert parse_qs(urlsplit(request.url).query) == {
         "$select": ["id,subject,from,receivedDateTime,body,bodyPreview"]
@@ -490,7 +490,7 @@ def test_get_message_encodes_id_and_requests_full_body(requests_mock):
 @pytest.mark.parametrize("message_id", [None, "", 42, "x" * 1025])
 def test_get_message_rejects_invalid_ids_without_network(requests_mock, message_id):
     with pytest.raises(ValueError):
-        graph.GraphClient().get_message("access-secret", message_id)
+        graph.GraphClient().get_message("access-secret", "inbox", message_id)
     assert requests_mock.call_count == 0
 
 

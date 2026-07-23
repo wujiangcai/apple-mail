@@ -271,10 +271,18 @@ def test_manual_recheck_keeps_invalid_grant_sticky():
     assert repository.accounts[1].token_valid is False
 
 
-def test_manual_recheck_keeps_mail_authorization_failures_invalid():
+@pytest.mark.parametrize(
+    "probe_error",
+    [
+        graph.GraphPermissionDenied("sanitized"),
+        graph.UpstreamUnavailable("sanitized"),
+        graph.UpstreamRateLimited(5),
+    ],
+)
+def test_manual_recheck_probe_failures_keep_account_invalid(probe_error):
     repository = FakeMailRepository([_stored(token_valid=False)])
     graph_client = FakeGraphClient()
-    graph_client.list_error = graph.GraphPermissionDenied("sanitized")
+    graph_client.list_error = probe_error
     service = MailService(
         repository,
         TokenCoordinator(repository, lambda: graph_client, _cipher(1), lambda: NOW),
@@ -282,11 +290,28 @@ def test_manual_recheck_keeps_mail_authorization_failures_invalid():
         lambda: NOW,
     )
 
-    with pytest.raises(graph.GraphPermissionDenied):
+    with pytest.raises(type(probe_error)):
         service.recheck_authorization(1)
 
     assert repository.accounts[1].token_valid is False
     assert repository.accounts[1].refresh_token_ciphertext == "opaque-ciphertext-1"
+
+
+def test_normal_mail_authorization_failure_marks_account_invalid():
+    repository = FakeMailRepository([_stored()])
+    graph_client = FakeGraphClient()
+    graph_client.list_error = graph.GraphAuthorizationRejected("sanitized")
+    service = MailService(
+        repository,
+        TokenCoordinator(repository, lambda: graph_client, _cipher(1), lambda: NOW),
+        lambda: graph_client,
+        lambda: NOW,
+    )
+
+    with pytest.raises(graph.GraphAuthorizationRejected):
+        service.list_mail(1, "inbox", 10)
+
+    assert repository.accounts[1].token_valid is False
 
 
 def test_same_account_is_immediately_busy_while_different_accounts_run_in_parallel():
@@ -360,10 +385,10 @@ def test_mail_mapping_validates_body_and_returns_only_public_fields():
             "bodyPreview": "Use code 123456",
         }
     ]
-    assert service.get_message(1, "message-1")["html"] == "<b>123456</b>"
+    assert service.get_message(1, "inbox", "message-1")["html"] == "<b>123456</b>"
     graph_client.messages[0]["body"]["content"] = 123456
     with pytest.raises(graph.UpstreamProtocolError):
-        service.get_message(1, "message-1")
+        service.get_message(1, "inbox", "message-1")
 
 
 @pytest.mark.parametrize(
@@ -576,7 +601,7 @@ def test_mail_api_supports_lazy_message_body_loading():
     )
     detail = client.post(
         "/api/accounts/1/mail/message",
-        json={"messageId": "message-1"},
+        json={"folder": "inbox", "messageId": "message-1"},
         headers=headers,
     )
 
@@ -595,8 +620,9 @@ def test_mail_api_accepts_ids_only_and_validates_all_payload_bounds():
         ("/api/accounts/1/mail", {"folder": "inbox", "limit": 0}),
         ("/api/accounts/1/mail", {"folder": "sent", "limit": 10}),
         ("/api/accounts/1/mail", {"folder": "inbox", "limit": 10, "token": "x"}),
-        ("/api/accounts/1/mail/message", {"messageId": ""}),
-        ("/api/accounts/1/mail/message", {"messageId": "x", "accountId": 2}),
+        ("/api/accounts/1/mail/message", {"folder": "inbox", "messageId": ""}),
+        ("/api/accounts/1/mail/message", {"folder": "sentitems", "messageId": "x"}),
+        ("/api/accounts/1/mail/message", {"folder": "inbox", "messageId": "x", "accountId": 2}),
         ("/api/accounts/1/verify-code", {"keyword": "x" * 129, "maxResults": 10}),
         ("/api/accounts/check-bound", {"ids": [1, 1]}),
         ("/api/accounts/check-bound", {"ids": list(range(1, 22))}),

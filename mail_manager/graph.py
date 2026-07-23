@@ -275,13 +275,15 @@ class GraphClient:
             params = None
         return messages
 
-    def get_message(self, access_token, message_id):
+    def get_message(self, access_token, folder, message_id):
         access_token = self._require_secret(access_token, "access_token")
+        if folder not in {"inbox", "junkemail"}:
+            raise ValueError("folder must be inbox or junkemail")
         message_id = self._require_secret(message_id, "message_id")
         if len(message_id) > MAX_MESSAGE_ID_LENGTH:
             raise ValueError("message_id is too long")
         encoded_id = quote(message_id, safe="")
-        url = f"{GRAPH_BASE}/me/messages/{encoded_id}"
+        url = f"{GRAPH_BASE}/me/mailFolders/{folder}/messages/{encoded_id}"
         try:
             response = self.session.get(
                 url,

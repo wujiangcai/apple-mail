@@ -490,7 +490,7 @@ export function bootstrap(doc = document, api = new ApiClient()) {
     renderMailDetail(mailDetail, null);
     const detail = await api.post(
       `/api/accounts/${accountId}/mail/message`,
-      { messageId },
+      { folder, messageId },
       { timeoutMs: MAIL_TIMEOUT_MS },
     );
     if (requestVersion !== mailDetailRequestVersion
