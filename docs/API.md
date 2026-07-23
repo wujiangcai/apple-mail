@@ -156,11 +156,28 @@
   "email": "customer@example.com",
   "expiresAt": "2026-07-22T13:00:00Z",
   "rentalExpiresAt": null,
-  "permanent": true
+  "permanent": true,
+  "tokenValid": true
 }
 ```
 
-其中 `expiresAt` 是当前短期会话期限；`rentalExpiresAt` 是租约期限，永久租约为 `null`。
+其中 `expiresAt` 是当前短期会话期限；`rentalExpiresAt` 是租约期限，永久租约为 `null`；`tokenValid=false` 表示授权需处理，但有效租约仍可进入并查看邮箱密码，站内邮件接口会暂停。
+
+### `POST /api/pickup/reveal-password`
+
+请求体为空对象：
+
+```json
+{}
+```
+
+成功只返回当前租约邮箱最新保存的密码：
+
+```json
+{"password":"..."}
+```
+
+接口不接受账号 ID 或租约 ID，需要有效 pickup 会话、准确的 Origin 和 CSRF token，并在返回前再次检查租约未到期、未撤销。不会返回 Client ID 或 refresh token，响应不缓存，并记录不含秘密的 `password_revealed` 事件。
 
 ### `GET /api/pickup/check-auth`
 

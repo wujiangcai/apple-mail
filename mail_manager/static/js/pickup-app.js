@@ -3,6 +3,7 @@ import { renderMailDetail, renderMailList, setStatus } from "./render.js";
 
 
 const MAIL_TIMEOUT_MS = 75_000;
+const PASSWORD_REVEAL_TTL_MS = 60_000;
 
 
 export function bootstrapPickup(doc = document, api = new ApiClient()) {
@@ -19,6 +20,15 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   const list = doc.querySelector("#pickup-mail-list");
   const detail = doc.querySelector("#pickup-mail-detail");
   const keyword = doc.querySelector("#pickup-keyword");
+  const accountEmail = doc.querySelector("#pickup-account-email");
+  const tokenStatus = doc.querySelector("#pickup-token-status");
+  const tokenHelp = doc.querySelector("#pickup-token-help");
+  const passwordValue = doc.querySelector("#pickup-password");
+  const revealPassword = doc.querySelector("#pickup-reveal-password");
+  const copyPassword = doc.querySelector("#pickup-copy-password");
+  const mailControls = [...doc.querySelectorAll(
+    "[data-pickup-folder], #pickup-refresh, #pickup-verify, #pickup-keyword",
+  )];
   let messages = [];
   let folder = "inbox";
   let expiresAt = null;
@@ -28,6 +38,11 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   let authEpoch = 0;
   let mailRequestVersion = 0;
   let detailRequestVersion = 0;
+  let tokenValid = true;
+  let revealedPassword = "";
+  let passwordTimer = null;
+  let passwordRequestVersion = 0;
+  let authOperationVersion = 0;
 
   function friendlyError(error) {
     const message = String(error?.message || "");
@@ -47,16 +62,60 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
     return translations.get(message) || "操作失败，请稍后重试或联系管理员";
   }
 
+  function erasePassword() {
+    passwordRequestVersion += 1;
+    revealedPassword = "";
+    passwordValue.textContent = "••••••••";
+    revealPassword.textContent = "查看密码";
+    copyPassword.disabled = true;
+    if (passwordTimer !== null) clearTimeout(passwordTimer);
+    passwordTimer = null;
+  }
+
+  function renderAuthorization(value) {
+    tokenValid = value === true;
+    tokenStatus.textContent = tokenValid ? "授权正常" : "授权需处理";
+    tokenStatus.className = tokenValid
+      ? "status-badge is-positive"
+      : "status-badge is-muted";
+    tokenHelp.textContent = tokenValid
+      ? "站内邮件读取可用"
+      : "可查看邮箱密码并登录 Microsoft 处理风控；站内邮件读取暂不可用";
+    for (const control of mailControls) control.disabled = !tokenValid;
+    doc.querySelector(".mail-layout").classList.toggle("pickup-mail-disabled", !tokenValid);
+    if (!tokenValid) {
+      messages = [];
+      renderMailList(list, messages);
+      renderMailDetail(detail, null);
+    }
+  }
+
+  function markAuthorizationFromError(error) {
+    if ([
+      "account token invalid",
+      "mail access authorization rejected",
+      "mail access permission denied",
+    ].includes(String(error?.message || ""))) {
+      renderAuthorization(false);
+    }
+  }
+
   function clearMailbox() {
     authEpoch += 1;
+    authOperationVersion += 1;
     mailRequestVersion += 1;
     detailRequestVersion += 1;
     api.abortAll?.();
+    erasePassword();
+    tokenValid = true;
     messages = [];
     list.replaceChildren();
     detail.replaceChildren();
     keyword.value = "";
     email.textContent = "邮箱取件";
+    accountEmail.textContent = "";
+    tokenStatus.textContent = "";
+    tokenHelp.textContent = "";
     expiry.textContent = "";
     expiresAt = null;
     rentalExpiresAt = null;
@@ -98,6 +157,8 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   function acceptAuth(auth) {
     api.setCsrfToken(auth.csrfToken);
     email.textContent = auth.email;
+    accountEmail.textContent = auth.email;
+    renderAuthorization(auth.tokenValid === true);
     expiresAt = new Date(auth.expiresAt);
     permanent = auth.permanent === true || auth.rentalExpiresAt == null;
     rentalExpiresAt = auth.rentalExpiresAt ? new Date(auth.rentalExpiresAt) : null;
@@ -156,16 +217,22 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const operationVersion = ++authOperationVersion;
     try {
       const auth = await api.post(
         "/api/pickup/login",
         { code: codeInput.value },
         { notifyUnauthorized: false },
       );
+      if (operationVersion !== authOperationVersion) return;
       codeInput.value = "";
       acceptAuth(auth);
-      await loadMail();
-      setStatus(status, "邮箱已载入", "success");
+      if (tokenValid) {
+        await loadMail();
+        setStatus(status, "邮箱已载入", "success");
+      } else {
+        setStatus(status, "邮箱授权需处理，可查看密码登录 Microsoft", "error");
+      }
     } catch (error) {
       setStatus(status, friendlyError(error), "error");
     }
@@ -178,6 +245,7 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
         await loadMail();
         setStatus(status, "邮件已载入", "success");
       } catch (error) {
+        markAuthorizationFromError(error);
         setStatus(status, friendlyError(error), "error");
       }
     });
@@ -222,6 +290,48 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
     }
   });
 
+  doc.querySelector("#pickup-copy-email").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(accountEmail.textContent);
+      setStatus(status, "邮箱已复制", "success");
+    } catch {
+      setStatus(status, "复制失败，请手动选择邮箱", "error");
+    }
+  });
+
+  revealPassword.addEventListener("click", async () => {
+    if (revealedPassword) {
+      erasePassword();
+      return;
+    }
+    const requestEpoch = authEpoch;
+    const requestVersion = ++passwordRequestVersion;
+    try {
+      const result = await api.post("/api/pickup/reveal-password", {});
+      if (requestEpoch !== authEpoch
+          || requestVersion !== passwordRequestVersion
+          || dashboard.hidden) return;
+      revealedPassword = result.password;
+      passwordValue.textContent = revealedPassword;
+      revealPassword.textContent = "隐藏密码";
+      copyPassword.disabled = false;
+      passwordTimer = setTimeout(erasePassword, PASSWORD_REVEAL_TTL_MS);
+      setStatus(status, "密码将在 60 秒后从页面清除", "success");
+    } catch (error) {
+      setStatus(status, friendlyError(error), "error");
+    }
+  });
+
+  copyPassword.addEventListener("click", async () => {
+    if (!revealedPassword) return;
+    try {
+      await navigator.clipboard.writeText(revealedPassword);
+      setStatus(status, "密码已复制；剪贴板历史可能继续保留", "success");
+    } catch {
+      setStatus(status, "复制失败，请手动选择密码", "error");
+    }
+  });
+
   doc.querySelector("#pickup-logout").addEventListener("click", async () => {
     try {
       await api.post("/api/pickup/logout", {});
@@ -238,14 +348,16 @@ export function bootstrapPickup(doc = document, api = new ApiClient()) {
   });
 
   (async () => {
+    const operationVersion = authOperationVersion;
     try {
       const auth = await api.get("/api/pickup/check-auth");
+      if (operationVersion !== authOperationVersion) return;
       if (!auth.authenticated) {
         showAuthenticated(false);
         return;
       }
       acceptAuth(auth);
-      await loadMail();
+      if (tokenValid) await loadMail();
     } catch (error) {
       showAuthenticated(false);
       setStatus(status, friendlyError(error), "error");

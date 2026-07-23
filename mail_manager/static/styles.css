@@ -238,6 +238,15 @@ code { color: var(--apple-dark); font: .8rem ui-monospace, monospace; }
 .secret-list dd { min-width: 0; margin: 0; overflow: hidden; font: .78rem ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .secret-list button { color: var(--leaf); border: 0; background: transparent; font-size: .76rem; font-weight: 800; }
 
+.pickup-account-info { display: grid; padding: 16px 28px; border-bottom: 1px solid var(--line); background: #fffdf8; gap: 10px; }
+.pickup-info-row { display: grid; align-items: center; grid-template-columns: 100px minmax(0, 1fr) auto; gap: 12px; }
+.pickup-info-label { color: var(--ink-muted); font-size: .76rem; font-weight: 800; }
+.pickup-info-row strong, .pickup-info-row code { min-width: 0; overflow-wrap: anywhere; }
+.pickup-info-help { color: var(--ink-muted); font-size: .78rem; }
+.pickup-password-actions { display: flex; gap: 6px; }
+.pickup-password-warning { margin: 4px 0 0; color: var(--apple-dark); font-size: .76rem; line-height: 1.6; }
+.pickup-mail-disabled { opacity: .55; }
+
 .mail-dialog { width: min(1250px, calc(100vw - 28px)); height: min(820px, calc(100vh - 28px)); padding: 24px; background: var(--paper-light); box-shadow: var(--shadow); }
 .mail-dialog-heading { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .mail-tools { display: flex; padding: 14px 0; align-items: end; justify-content: space-between; gap: 18px; }
@@ -287,6 +296,10 @@ code { color: var(--apple-dark); font: .8rem ui-monospace, monospace; }
   .mail-layout aside { border-right: 0; border-bottom: 1px solid var(--line); }
   .secret-list div { grid-template-columns: 1fr auto; }
   .secret-list dt { grid-column: 1 / -1; }
+  .pickup-account-info { padding-inline: 18px; }
+  .pickup-info-row { align-items: stretch; grid-template-columns: 1fr auto; }
+  .pickup-info-label, .pickup-info-help { grid-column: 1 / -1; }
+  .pickup-password-actions { justify-content: flex-end; }
 }
 
 @media (max-width: 520px) {

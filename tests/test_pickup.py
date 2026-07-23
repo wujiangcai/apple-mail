@@ -24,22 +24,22 @@ class FakePickupRepository:
         self.deleted = []
         self.events = []
         self.deny = False
-        self.mailbox_unavailable = False
+        self.token_valid = True
+        self.password_ciphertext = "password-ciphertext"
 
     def exchange_code(self, client_key, code_hash, session_hash, csrf_hash, now, limit):
-        from mail_manager.pickup import PickupDenied, PickupMailboxUnavailable
+        from mail_manager.pickup import PickupDenied
 
         self.exchange_calls.append((client_key, code_hash, session_hash, csrf_hash, now, limit))
         if self.deny:
             raise PickupDenied
-        if self.mailbox_unavailable:
-            raise PickupMailboxUnavailable
         context = PickupContext(
             3,
             1,
             "rented@example.test",
             now + timedelta(minutes=30),
             now + timedelta(minutes=30),
+            self.token_valid,
         )
         self.sessions[session_hash] = PickupSession(session_hash, csrf_hash, context)
         return context
@@ -48,7 +48,27 @@ class FakePickupRepository:
         session = self.sessions.get(session_hash)
         if session is None or session.context.expires_at <= now:
             return None
-        return session
+        context = PickupContext(
+            session.context.rental_id,
+            session.context.account_id,
+            session.context.email,
+            session.context.expires_at,
+            session.context.rental_expires_at,
+            self.token_valid,
+        )
+        return PickupSession(session_hash, session.csrf_hash, context)
+
+    def get_active_password_ciphertext(self, rental_id, account_id, now):
+        from mail_manager.pickup import PickupPasswordUnavailable
+
+        if not any(
+            session.context.rental_id == rental_id
+            and session.context.account_id == account_id
+            and session.context.expires_at > now
+            for session in self.sessions.values()
+        ):
+            raise PickupPasswordUnavailable
+        return self.password_ciphertext
 
     def delete_session(self, session_hash):
         self.deleted.append(session_hash)
@@ -75,6 +95,7 @@ def _app(repository, clock):
         )
     ])
     cipher = FakeCredentialCipher()
+    cipher.add("password-ciphertext", "mailbox-password")
     cipher.add("refresh-ciphertext-1", "refresh-token")
     graph = FakeGraphClient([
         {
@@ -127,6 +148,7 @@ def test_pickup_login_uses_separate_hardened_cookie_and_hashed_storage():
     assert payload["expiresAt"] == "2026-07-22T12:30:00Z"
     assert payload["rentalExpiresAt"] == "2026-07-22T12:30:00Z"
     assert payload["permanent"] is False
+    assert payload["tokenValid"] is True
     stored_hash = repository.exchange_calls[0][2]
     assert stored_hash == hash_token(cookie.value)
     assert cookie.value not in repr(repository.sessions)
@@ -146,17 +168,68 @@ def test_pickup_code_failure_is_generic_and_creates_no_cookie():
     assert "wrong" not in response.get_data(as_text=True)
 
 
-def test_pickup_login_reports_unavailable_mailbox_without_creating_cookie():
+def test_pickup_login_allows_active_rental_when_authorization_needs_attention():
     repository = FakePickupRepository()
-    repository.mailbox_unavailable = True
+    repository.token_valid = False
     client = _app(repository, MutableClock(NOW)).test_client()
 
     response = client.post("/api/pickup/login", json={"code": "valid-code"})
 
-    assert response.status_code == 409
-    assert response.get_json() == {"error": "mailbox authorization unavailable"}
-    assert client.get_cookie("pickup_session") is None
-    assert repository.sessions == {}
+    assert response.status_code == 200
+    assert response.get_json()["tokenValid"] is False
+    assert client.get_cookie("pickup_session") is not None
+
+
+def test_pickup_password_reveal_requires_session_csrf_and_returns_only_password():
+    repository = FakePickupRepository()
+    client = _app(repository, MutableClock(NOW)).test_client()
+
+    assert client.post("/api/pickup/reveal-password", json={}).status_code == 401
+    auth = _login(client)
+    assert client.post("/api/pickup/reveal-password", json={}).status_code == 403
+    response = client.post(
+        "/api/pickup/reveal-password",
+        json={},
+        headers=_headers(auth["csrfToken"]),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"password": "mailbox-password"}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert repository.events[-1] == (
+        3,
+        "password_revealed",
+        "127.0.0.1",
+        NOW,
+        None,
+    )
+
+
+def test_pickup_password_reveal_rejects_client_selected_account_fields():
+    repository = FakePickupRepository()
+    client = _app(repository, MutableClock(NOW)).test_client()
+    auth = _login(client)
+
+    response = client.post(
+        "/api/pickup/reveal-password",
+        json={"accountId": 2},
+        headers=_headers(auth["csrfToken"]),
+    )
+
+    assert response.status_code == 400
+    assert "mailbox-password" not in response.get_data(as_text=True)
+
+
+def test_pickup_check_auth_reports_live_token_status():
+    repository = FakePickupRepository()
+    client = _app(repository, MutableClock(NOW)).test_client()
+    _login(client)
+    repository.token_valid = False
+
+    response = client.get("/api/pickup/check-auth")
+
+    assert response.status_code == 200
+    assert response.get_json()["tokenValid"] is False
 
 
 def test_pickup_mail_requires_pickup_session_and_exact_csrf():

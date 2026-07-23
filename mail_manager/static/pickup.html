@@ -37,6 +37,27 @@
             <button class="button button-quiet" type="button" data-pickup-folder="junkemail">垃圾邮件</button>
           </div>
         </div>
+        <section class="pickup-account-info" aria-label="邮箱账号信息">
+          <div class="pickup-info-row">
+            <span class="pickup-info-label">邮箱</span>
+            <strong id="pickup-account-email"></strong>
+            <button id="pickup-copy-email" class="button button-quiet" type="button">复制邮箱</button>
+          </div>
+          <div class="pickup-info-row">
+            <span class="pickup-info-label">授权状态</span>
+            <span id="pickup-token-status" class="status-badge is-positive">授权正常</span>
+            <span id="pickup-token-help" class="pickup-info-help"></span>
+          </div>
+          <div class="pickup-info-row pickup-password-row">
+            <span class="pickup-info-label">邮箱密码</span>
+            <code id="pickup-password">••••••••</code>
+            <div class="pickup-password-actions">
+              <button id="pickup-reveal-password" class="button button-outline" type="button">查看密码</button>
+              <button id="pickup-copy-password" class="button button-quiet" type="button" disabled>复制密码</button>
+            </div>
+          </div>
+          <p class="pickup-password-warning">密码显示或复制后，租约到期或撤销只能阻止以后再次查看，无法让已知密码失效。复制内容也可能保留在系统或云剪贴板历史中；真正回收权限需要管理员修改邮箱密码。</p>
+        </section>
         <div class="verify-tools">
           <label for="pickup-keyword">验证码关键词</label>
           <input id="pickup-keyword" type="search" maxlength="128" placeholder="可选">

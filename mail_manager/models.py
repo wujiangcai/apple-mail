@@ -97,6 +97,7 @@ class PickupContext:
     email: str
     expires_at: datetime
     rental_expires_at: datetime | None = None
+    token_valid: bool = True
 
 
 @dataclass(frozen=True)

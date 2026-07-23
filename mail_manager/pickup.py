@@ -8,6 +8,7 @@ from flask import Blueprint, Flask, current_app, g, jsonify, request
 
 from mail_manager import db
 from mail_manager.auth import constant_time_compare, derive_csrf_token, hash_token
+from mail_manager.crypto import CredentialCipher
 from mail_manager.models import PickupContext, PickupSession
 from mail_manager.rentals import hash_access_code
 
@@ -21,7 +22,7 @@ class PickupDenied(Exception):
     pass
 
 
-class PickupMailboxUnavailable(Exception):
+class PickupPasswordUnavailable(Exception):
     pass
 
 
@@ -92,12 +93,6 @@ class PostgresPickupRepository:
                 )
                 raise PickupDenied
 
-            if not row[4]:
-                connection.execute(
-                    "DELETE FROM pickup_failures WHERE client_key = %s", (client_key,)
-                )
-                raise PickupMailboxUnavailable
-
             connection.execute(
                 "DELETE FROM pickup_failures WHERE client_key = %s", (client_key,)
             )
@@ -129,7 +124,7 @@ class PostgresPickupRepository:
                 (row[0], client_key, now),
             )
         return PickupContext(
-            row[0], row[1], row[2], session_expires_at, row[3]
+            row[0], row[1], row[2], session_expires_at, row[3], bool(row[4])
         )
 
     def find_session(self, session_hash, now):
@@ -137,7 +132,7 @@ class PostgresPickupRepository:
             row = connection.execute(
                 """
                 SELECT s.csrf_hash, s.expires_at, r.id, r.account_id, a.email,
-                       r.expires_at
+                       r.expires_at, a.token_valid
                 FROM pickup_sessions AS s
                 JOIN mailbox_rentals AS r ON r.id = s.rental_id
                 JOIN accounts AS a ON a.id = r.account_id
@@ -166,8 +161,30 @@ class PostgresPickupRepository:
                 row[4],
                 session_expiry,
                 rental_expiry,
+                bool(row[6]),
             ),
         )
+
+    def get_active_password_ciphertext(self, rental_id, account_id, now):
+        with db.transaction(self._connection()) as connection:
+            row = connection.execute(
+                """
+                SELECT a.password_ciphertext
+                FROM mailbox_rentals AS r
+                JOIN accounts AS a ON a.id = r.account_id
+                WHERE r.id = %s
+                  AND r.account_id = %s
+                  AND r.ended_at IS NULL
+                  AND r.revoked_at IS NULL
+                  AND r.starts_at <= %s
+                  AND (r.expires_at IS NULL OR r.expires_at > %s)
+                FOR UPDATE OF r
+                """,
+                (rental_id, account_id, now, now),
+            ).fetchone()
+            if row is None:
+                raise PickupPasswordUnavailable
+        return row[0]
 
     def delete_session(self, session_hash):
         with db.transaction(self._connection()) as connection:
@@ -186,6 +203,22 @@ class PostgresPickupRepository:
                 """,
                 (rental_id, event_type, client_key, detail, now),
             )
+
+
+class PickupPasswordService:
+    def __init__(self, repository, cipher):
+        self._repository = repository
+        self._cipher = cipher
+
+    def reveal(self, context, client_key, now):
+        ciphertext = self._repository.get_active_password_ciphertext(
+            context.rental_id, context.account_id, now
+        )
+        password = self._cipher.decrypt(ciphertext)
+        self._repository.record_event(
+            context.rental_id, "password_revealed", client_key, now
+        )
+        return password
 
 
 blueprint = Blueprint("pickup", __name__)
@@ -265,8 +298,6 @@ def login():
         )
     except PickupDenied:
         return jsonify(error="invalid or expired pickup code"), 401
-    except PickupMailboxUnavailable:
-        return jsonify(error="mailbox authorization unavailable"), 409
     max_age = max(1, math.floor((context.expires_at - _now()).total_seconds()))
     response = jsonify(
         authenticated=True,
@@ -279,6 +310,7 @@ def login():
             else context.rental_expires_at.isoformat().replace("+00:00", "Z")
         ),
         permanent=context.rental_expires_at is None,
+        tokenValid=context.token_valid,
     )
     response.set_cookie(
         PICKUP_COOKIE,
@@ -309,7 +341,29 @@ def check_auth():
             else context.rental_expires_at.isoformat().replace("+00:00", "Z")
         ),
         permanent=context.rental_expires_at is None,
+        tokenValid=context.token_valid,
     )
+
+
+@blueprint.post("/api/pickup/reveal-password")
+def reveal_password():
+    payload = request.get_json(silent=True)
+    if payload not in (None, {}) or (
+        payload is None and request.content_length not in (None, 0)
+    ):
+        return jsonify(error="invalid request"), 400
+    context = current_pickup_context()
+    if context is None:
+        return jsonify(error="pickup authorization required"), 401
+    try:
+        password = current_app.extensions["pickup_password_service"].reveal(
+            context, _client_key(), _now()
+        )
+    except PickupPasswordUnavailable:
+        return jsonify(error="pickup authorization required"), 401
+    response = jsonify(password=password)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @blueprint.post("/api/pickup/logout")
@@ -336,7 +390,13 @@ def record_pickup_event(event_type, detail=None):
 
 def init_app(app: Flask):
     repository = app.config.get("PICKUP_REPOSITORY") or PostgresPickupRepository()
+    cipher = app.config.get("CREDENTIAL_CIPHER")
+    if cipher is None:
+        cipher = CredentialCipher(app.config["CREDENTIALS_ENCRYPTION_KEY"])
     app.extensions["pickup_repository"] = repository
+    app.extensions["pickup_password_service"] = PickupPasswordService(
+        repository, cipher
+    )
     app.config.setdefault("PICKUP_CLOCK", lambda: datetime.now(UTC))
     app.register_blueprint(blueprint)
     app.before_request(protect_pickup_api)
