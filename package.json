@@ -9,7 +9,7 @@
     "audit": "npm audit --audit-level=high"
   },
   "devDependencies": {
-    "eslint": "^9.0.0",
+    "eslint": "^10.8.1",
     "jsdom": "^26.0.0",
     "vitest": "^3.0.0"
   }
